@@ -119,6 +119,13 @@ impl AudioDevice {
             .find(|api| api.get_display_name().contains(name))
             .ok_or(AudioDeviceError::NotAvailable)?
             .clone();
+
+        // update defaults
+        self.input_device = host.default_input_device()?;
+        self.num_input_channels = host.default_input_device()?.input_channels as u16;
+        self.output_device = host.default_output_device()?;
+        self.num_output_channels = host.default_input_device()?.output_channels as u16;
+
         Ok(())
     }
 
