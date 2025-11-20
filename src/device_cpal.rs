@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use audio_blocks::{
-    AudioBlockInterleaved, AudioBlockInterleavedView, AudioBlockInterleavedViewMut,
+    AudioBlockInterleaved, AudioBlockInterleavedViewMut, AudioBlockMut, AudioBlockOps,
 };
 use cpal::{
     SampleRate, Stream, StreamConfig,
@@ -28,14 +28,26 @@ pub enum AudioDeviceError {
 
 #[derive(Debug, Clone)]
 pub struct Input {
-    name: String,
-    num_channels: u16,
+    pub name: String,
+    pub num_channels: u16,
+}
+
+impl AsRef<str> for Input {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Output {
-    name: String,
-    num_channels: u16,
+    pub name: String,
+    pub num_channels: u16,
+}
+
+impl AsRef<str> for Output {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
 }
 
 pub struct AudioDevice {
@@ -167,7 +179,7 @@ impl AudioDevice {
         Ok(())
     }
 
-    pub fn set_input(&mut self, input: &Input) -> AudioDeviceResult<()> {
+    pub fn set_input(&mut self, input: &str) -> AudioDeviceResult<()> {
         let device = self
             .host
             .input_devices()?
@@ -175,7 +187,7 @@ impl AudioDevice {
                 device
                     .name()
                     .ok()
-                    .map(|name| name.contains(&input.name))
+                    .map(|name| name.contains(input))
                     .unwrap_or(false)
             })
             .ok_or(AudioDeviceError::NotAvailable)?;
@@ -184,7 +196,7 @@ impl AudioDevice {
         Ok(())
     }
 
-    pub fn set_output(&mut self, output: &Output) -> AudioDeviceResult<()> {
+    pub fn set_output(&mut self, output: &str) -> AudioDeviceResult<()> {
         let device = self
             .host
             .output_devices()?
@@ -192,7 +204,7 @@ impl AudioDevice {
                 device
                     .name()
                     .ok()
-                    .map(|name| name.contains(&output.name))
+                    .map(|name| name.contains(output))
                     .unwrap_or(false)
             })
             .ok_or(AudioDeviceError::NotAvailable)?;
@@ -204,86 +216,133 @@ impl AudioDevice {
     pub fn start(
         &mut self,
         config: Config,
-        mut process_fn: impl FnMut(Block<'_>) + Send + 'static,
+        mut process_fn: impl FnMut(Block) + Send + 'static,
     ) -> AudioDeviceResult<()> {
-        let output_device = self
-            .output_device
-            .as_ref()
-            .ok_or(AudioDeviceError::NotAvailable)?;
-        let input_device = self
-            .input_device
-            .as_ref()
-            .ok_or(AudioDeviceError::NotAvailable)?;
+        let has_input = self.input_device.is_some();
+        let has_output = self.output_device.is_some();
 
-        let latency_ms = 10;
-        let latency_samples = (latency_ms as f64 / 1000.0 * config.sample_rate as f64) as usize
-            * config.num_channels as usize;
-        let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
-
-        // Pre-fill with silence for latency compensation
-        for _ in 0..latency_samples {
-            let _ = producer.push(0.0);
+        // this architecture needs at least an output device
+        if !has_output {
+            return Err(AudioDeviceError::NotAvailable.into());
         }
 
-        let stream_config = StreamConfig {
-            channels: config.num_channels,
-            sample_rate: SampleRate(config.sample_rate),
-            buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+        // Get actual channel counts from devices
+        let max_input_channels = self
+            .input_device
+            .as_ref()
+            .and_then(|d| d.default_input_config().ok())
+            .map(|c| c.channels())
+            .unwrap_or(0);
+
+        let max_output_channels = self
+            .output_device
+            .as_ref()
+            .and_then(|d| d.default_output_config().ok())
+            .map(|c| c.channels())
+            .unwrap_or(0);
+
+        // Limit channel count to capabilities
+        let input_channels = config.num_channels.min(max_input_channels);
+        let output_channels = config.num_channels.min(max_output_channels);
+
+        // Enough space in process for the larget channel count
+        let process_channels = input_channels.max(output_channels);
+
+        // Only create ring buffer if we have input audio
+        let (mut producer, mut consumer) = if has_input {
+            let latency_ms = 100;
+            let latency_samples = (latency_ms as f64 / 1000.0 * config.sample_rate as f64) as usize
+                * input_channels as usize;
+            let input_block_size = input_channels as usize * config.num_frames;
+            let (mut producer, consumer) =
+                RingBuffer::<f32>::new(latency_samples + 10 * input_block_size);
+
+            // Pre-fill with silence for latency compensation
+            for _ in 0..latency_samples {
+                let _ = producer.push(0.0);
+            }
+            (Some(producer), Some(consumer))
+        } else {
+            (None, None)
         };
 
-        let input_stream = input_device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                for sample in data {
-                    if producer.push(*sample).is_err() {
-                        eprintln!("AudioDevice: Could not push complete input into producer...");
+        // Start input stream if input device is selected
+        if let Some(input_device) = &self.input_device {
+            // Use actual device channel count for the stream
+            let input_stream_config = StreamConfig {
+                channels: input_channels,
+                sample_rate: SampleRate(config.sample_rate),
+                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+            };
+            let input_stream = input_device.build_input_stream(
+                &input_stream_config,
+                move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                    if let Some(ref mut producer) = producer {
+                        // Send raw input data (actual device channels)
+                        for sample in data {
+                            if producer.push(*sample).is_err() {
+                                eprintln!(
+                                    "AudioDevice: Could not push complete input into producer..."
+                                );
+                            }
+                        }
                     }
-                }
-            },
-            move |err| eprintln!("Error in input stream: {:?}", err),
-            None,
-        )?;
+                },
+                move |err| eprintln!("Error in input stream: {:?}", err),
+                None,
+            )?;
+            input_stream.play()?;
+            self.input_stream = Some(input_stream);
+        }
 
-        let mut input_block =
-            AudioBlockInterleaved::<f32>::new(config.num_channels, config.num_frames);
+        // Start output stream if output device is selected
+        if let Some(output_device) = &self.output_device {
+            // Use actual device channel count for the stream
+            let output_stream_config = StreamConfig {
+                channels: output_channels,
+                sample_rate: SampleRate(config.sample_rate),
+                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+            };
 
-        let output_stream = output_device.build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                // Read input data from ring buffer
-                for sample in input_block.raw_data_mut() {
-                    *sample = if let Ok(s) = consumer.pop() {
-                        s
-                    } else {
-                        eprintln!("AudioDevice: Could not pull new samples from consumer...");
-                        0.0
-                    };
-                }
+            let mut process_block =
+                AudioBlockInterleaved::<f32>::new(process_channels, config.num_frames);
 
-                let mut output_view = AudioBlockInterleavedViewMut::from_slice(
-                    data,
-                    config.num_channels,
-                    data.len() / config.num_channels as usize,
-                );
+            let output_stream = output_device.build_output_stream(
+                &output_stream_config,
+                move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                    let num_frames = data.len() / output_channels as usize;
 
-                // Copy input to output (passthrough)
-                for (i, o) in input_block.frames().zip(output_view.frames_mut()) {
-                    let copy_len = i.len().min(o.len());
-                    o[..copy_len].copy_from_slice(&i[..copy_len]);
-                }
+                    // Read input data from ring buffer if input is configured
+                    if let Some(ref mut consumer) = consumer {
+                        process_block.set_active_num_channels(input_channels);
+                        for frame in process_block.frames_mut() {
+                            for sample in frame {
+                                *sample = consumer.pop().unwrap_or_else(|_| {
+                                    eprintln!("AudioDevice: Could not pop sample from consumer");
+                                    0.0
+                                });
+                            }
+                        }
+                    }
 
-                // Call user's process function
-                process_fn(output_view);
-            },
-            move |err| eprintln!("Error in output stream: {:?}", err),
-            None,
-        )?;
+                    // change num_channels back to the process channels
+                    process_block.set_active_num_channels(process_channels);
 
-        input_stream.play()?;
-        output_stream.play()?;
+                    // Call user's process function
+                    process_fn(process_block.view_mut());
 
-        self.input_stream = Some(input_stream);
-        self.output_stream = Some(output_stream);
+                    // Copy from process buffer to output, handling channel mismatch
+                    let mut output_view =
+                        AudioBlockInterleavedViewMut::from_slice(data, output_channels, num_frames);
+                    output_view.copy_from_block_resize(&process_block);
+                },
+                move |err| eprintln!("Error in output stream: {:?}", err),
+                None,
+            )?;
+
+            output_stream.play()?;
+            self.output_stream = Some(output_stream);
+        }
 
         Ok(())
     }
@@ -317,8 +376,8 @@ mod tests {
         dbg!(device.output());
 
         device.set_api(&device.api()).unwrap();
-        device.set_input(&device.input()).unwrap();
-        device.set_output(&device.output()).unwrap();
+        device.set_input(&device.input().name).unwrap();
+        device.set_output(&device.output().name).unwrap();
 
         device
             .start(
