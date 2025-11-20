@@ -1,5 +1,3 @@
-use audio_blocks::{AudioBlockInterleavedView, AudioBlockInterleavedViewMut};
-
 mod compile_error;
 
 #[cfg(feature = "cpal")]
@@ -20,6 +18,8 @@ pub type AudioDeviceResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub type Block<'a> = AudioBlockInterleavedView<'a, f32>;
 pub type BlockMut<'a> = AudioBlockInterleavedViewMut<'a, f32>;
+
+pub use audio_blocks::*;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AudioDeviceError {
