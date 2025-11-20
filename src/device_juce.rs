@@ -1,21 +1,24 @@
-use std::{fmt::Debug, pin::Pin};
+use std::fmt::Debug;
 
 use audio_blocks::{AudioBlock, AudioBlockInterleaved, AudioBlockMut};
 use cxx_juce::{
     JUCE,
-    juce_audio_basics::AudioSampleBuffer,
     juce_audio_devices::{
-        AudioDeviceCallback, AudioDeviceManager, AudioDeviceType, ChannelCount,
-        device_manager::AudioCallbackHandle,
+        AudioCallbackHandle, AudioDeviceManager, AudioIODeviceCallback, AudioIODeviceType,
+        ChannelCount, InputAudioSampleBuffer, OutputAudioSampleBuffer,
     },
 };
 
-use crate::{AudioDeviceResult, AudioDeviceTrait, Block, BlockMut, Config, DeviceInfo};
+use crate::{
+    AudioDeviceError, AudioDeviceResult, AudioDeviceTrait, Block, BlockMut, Config, DeviceInfo,
+};
 
 pub struct AudioDevice {
     _juce: JUCE,
     apis: Vec<String>,
     device_manager: AudioDeviceManager,
+    input_device: String,
+    output_device: String,
     handle: Option<AudioCallbackHandle>,
 }
 
@@ -43,6 +46,14 @@ impl AudioDeviceTrait for AudioDevice {
         Ok(Self {
             _juce: juce,
             apis,
+            input_device: device_manager
+                .audio_device_setup()
+                .input_device_name()
+                .into(),
+            output_device: device_manager
+                .audio_device_setup()
+                .output_device_name()
+                .into(),
             device_manager,
             handle: None,
         })
@@ -96,28 +107,32 @@ impl AudioDeviceTrait for AudioDevice {
     }
 
     fn set_api(&mut self, name: &str) -> AudioDeviceResult<()> {
-        self.device_manager
-            .set_current_audio_device_type(name, true);
+        self.device_manager.set_current_audio_device_type(name);
+        // update setup
+        self.input_device = self.input();
+        self.output_device = self.output();
         Ok(())
     }
 
     fn set_input(&mut self, input: &str) -> AudioDeviceResult<()> {
-        // self.input_device = Host::new(self.api.clone())
-        //     .unwrap()
-        //     .iter_input_devices()
-        //     .find(|device| device.name.contains(input))
-        //     .ok_or(AudioDeviceError::NotAvailable)?
-        //     .clone();
+        let device = self
+            .inputs()
+            .iter()
+            .cloned()
+            .find(|p| p.name.contains(input))
+            .ok_or(AudioDeviceError::NotAvailable)?;
+        self.input_device = device.name.clone();
         Ok(())
     }
 
     fn set_output(&mut self, output: &str) -> AudioDeviceResult<()> {
-        // self.output_device = Host::new(self.api.clone())
-        //     .unwrap()
-        //     .iter_output_devices()
-        //     .find(|device| device.name.contains(output))
-        //     .ok_or(AudioDeviceError::NotAvailable)?
-        //     .clone();
+        let device = self
+            .outputs()
+            .iter()
+            .cloned()
+            .find(|p| p.name.contains(output))
+            .ok_or(AudioDeviceError::NotAvailable)?;
+        self.output_device = device.name.clone();
         Ok(())
     }
 
@@ -132,7 +147,7 @@ impl AudioDeviceTrait for AudioDevice {
         setup = setup.with_sample_rate(config.sample_rate as f64);
         setup = setup.with_buffer_size(config.num_frames);
 
-        self.device_manager.set_audio_device_setup(&setup, true)?;
+        self.device_manager.set_audio_device_setup(&setup);
 
         self.handle = Some(
             self.device_manager
@@ -166,8 +181,8 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioCallback<F> {
     }
 }
 
-impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioDeviceCallback for AudioCallback<F> {
-    fn about_to_start(&mut self, device: &mut dyn cxx_juce::juce_audio_devices::AudioDevice) {
+impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for AudioCallback<F> {
+    fn about_to_start(&mut self, device: &mut dyn cxx_juce::juce_audio_devices::AudioIODevice) {
         let num_input_channels = device.input_channels() as u16;
         let num_output_channels = device.output_channels() as u16;
         let num_frames = device.buffer_size() as usize;
@@ -177,23 +192,19 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioDeviceCallback for AudioCa
 
     fn process_block(
         &mut self,
-        input: &AudioSampleBuffer,
-        mut output: Pin<&mut AudioSampleBuffer>,
+        input: &InputAudioSampleBuffer,
+        output: &mut OutputAudioSampleBuffer,
     ) {
         // resize buffers
-        self.input_block.set_active_size(
-            input.get_num_channels() as u16,
-            input.get_num_samples() as usize,
-        );
-        self.output_block.set_active_size(
-            output.get_num_channels() as u16,
-            output.get_num_samples() as usize,
-        );
+        self.input_block
+            .set_active_size(input.channels() as u16, input.samples() as usize);
+        self.output_block
+            .set_active_size(output.channels() as u16, output.samples() as usize);
 
         // copy input
-        for ch in 0..input.get_num_channels() {
-            let channel = input.get_read_slice(ch);
-            for frame in 0..input.get_num_samples() {
+        for ch in 0..input.channels() {
+            let channel = &input[ch];
+            for frame in 0..input.samples() {
                 *self.input_block.sample_mut(ch as u16, frame as usize) = channel[frame as usize];
             }
         }
@@ -202,9 +213,9 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioDeviceCallback for AudioCa
         (self.process_fn)(self.input_block.view(), self.output_block.view_mut());
 
         // copy output
-        let num_samples = output.get_num_samples();
-        for ch in 0..output.get_num_channels() {
-            let channel = output.as_mut().get_write_slice(ch);
+        let num_samples = output.samples();
+        for ch in 0..output.channels() {
+            let channel = &mut output[ch];
             for frame in 0..num_samples {
                 channel[frame as usize] = self.output_block.sample(ch as u16, frame as usize);
             }
