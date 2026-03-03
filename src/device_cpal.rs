@@ -151,8 +151,8 @@ impl AudioDeviceTrait for AudioDevice {
         config: Config,
         mut process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> AudioDeviceResult<()> {
-        let has_input = self.input_device.is_some();
-        let has_output = self.output_device.is_some();
+        let has_input = self.input_device.is_some() && config.num_input_channels > 0;
+        let has_output = self.output_device.is_some() && config.num_output_channels > 0;
 
         // this architecture needs at least an output device
         if !has_output {
@@ -177,33 +177,33 @@ impl AudioDeviceTrait for AudioDevice {
             (None, None)
         };
 
-        // Start input stream if input device is selected
-        if let Some(input_device) = &self.input_device {
-            // Use actual device channel count for the stream
-            let input_stream_config = StreamConfig {
-                channels: config.num_input_channels,
-                sample_rate: config.sample_rate,
-                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
-            };
-            let input_stream = input_device.build_input_stream(
-                &input_stream_config,
-                move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                    if let Some(ref mut producer) = producer {
-                        // Send raw input data (actual device channels)
-                        for sample in data {
-                            if producer.push(*sample).is_err() {
-                                eprintln!(
-                                    "AudioDevice: Could not push complete input into producer..."
-                                );
+        // Start input stream if input device is selected and channels > 0
+        if has_input {
+            if let Some(input_device) = &self.input_device {
+                let input_stream_config = StreamConfig {
+                    channels: config.num_input_channels,
+                    sample_rate: config.sample_rate,
+                    buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+                };
+                let input_stream = input_device.build_input_stream(
+                    &input_stream_config,
+                    move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                        if let Some(ref mut producer) = producer {
+                            for sample in data {
+                                if producer.push(*sample).is_err() {
+                                    eprintln!(
+                                        "AudioDevice: Could not push complete input into producer..."
+                                    );
+                                }
                             }
                         }
-                    }
-                },
-                move |err| eprintln!("Error in input stream: {:?}", err),
-                None,
-            )?;
-            input_stream.play()?;
-            self.input_stream = Some(input_stream);
+                    },
+                    move |err| eprintln!("Error in input stream: {:?}", err),
+                    None,
+                )?;
+                input_stream.play()?;
+                self.input_stream = Some(input_stream);
+            }
         }
 
         // Start output stream if output device is selected
@@ -218,7 +218,7 @@ impl AudioDeviceTrait for AudioDevice {
             let mut input_block = if has_input {
                 Interleaved::new(config.num_input_channels, config.num_frames)
             } else {
-                Interleaved::new(0, 0)
+                Interleaved::new(1, 0)
             };
 
             let output_stream = output_device.build_output_stream(

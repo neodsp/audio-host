@@ -3,11 +3,6 @@ use audio_io::{AudioBlockOpsMut, AudioDevice, AudioDeviceResult, AudioDeviceTrai
 fn main() -> AudioDeviceResult<()> {
     let mut device = AudioDevice::new()?;
 
-    // select devices
-    device.set_api(&device.api()).unwrap();
-    device.set_input(&device.input()).unwrap();
-    device.set_output(&device.output()).unwrap();
-
     // start audio device
     device
         .start(
