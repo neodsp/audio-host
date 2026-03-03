@@ -46,20 +46,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "audio-device"
-version = "0.1.0"
+name = "audio-io"
+version = "0.5.0"
 dependencies = [
  "audio-blocks",
  "cpal",
  "cxx-juce",
- "js-sys",
  "rtaudio",
  "rtrb",
  "serde",
  "thiserror 2.0.18",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
 ]
 
 [[package]]

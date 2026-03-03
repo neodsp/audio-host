@@ -6,8 +6,6 @@ pub mod device_cpal;
 pub mod device_juce;
 #[cfg(feature = "rtaudio")]
 pub mod device_rtaudio;
-#[cfg(feature = "web")]
-pub mod web_audio;
 
 #[cfg(feature = "cpal")]
 pub use device_cpal::AudioDevice;
@@ -15,8 +13,6 @@ pub use device_cpal::AudioDevice;
 pub use device_juce::AudioDevice;
 #[cfg(feature = "rtaudio")]
 pub use device_rtaudio::AudioDevice;
-#[cfg(feature = "web")]
-pub use web_audio::WebAudio;
 
 pub type AudioDeviceResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -32,12 +28,14 @@ pub enum AudioDeviceError {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceInfo {
     pub name: String,
     pub num_channels: u16,
 }
 
 #[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
     pub num_input_channels: u16,
     pub num_output_channels: u16,

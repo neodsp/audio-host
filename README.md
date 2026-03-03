@@ -1,4 +1,4 @@
-# audio-device
+# audio-io
 
 A backend-agnostic Rust library for managing audio input and output devices. This crate provides a unified, high-level interface for interacting with various audio backends, allowing you to write audio application code that is independent of the underlying audio driver implementation.
 
@@ -20,20 +20,20 @@ These backends are mutually exclusive. Trying to enable more than one (e.g., `cp
 
 ## Installation
 
-Add `audio-device` to your `Cargo.toml`.
+Add `audio-io` to your `Cargo.toml`.
 
 To use the default backend (`rtaudio`):
 
 ```toml
 [dependencies]
-audio-device = "0.1.0"
+audio-io = "0.5.0"
 ```
 
 To use a specific backend (e.g., `cpal`), disable the default features:
 
 ```toml
 [dependencies]
-audio-device = { version = "0.1.0", default-features = false, features = ["cpal"] }
+audio-io = { version = "0.5.0", default-features = false, features = ["cpal"] }
 ```
 
 ## Usage

@@ -7,7 +7,6 @@ use crate::{
 };
 
 pub struct AudioDevice {
-    host: Host,
     api: rtaudio::Api,
     input_device: rtaudio::DeviceInfo,
     output_device: rtaudio::DeviceInfo,
@@ -41,7 +40,6 @@ impl AudioDeviceTrait for AudioDevice {
             .unwrap();
         Ok(Self {
             api: host.api(),
-            host,
             input_device,
             output_device,
             stream_handle: None,
@@ -108,14 +106,12 @@ impl AudioDeviceTrait for AudioDevice {
             .find(|d| d.is_default_output)
             .cloned()
             .unwrap();
-        self.host = host;
 
         Ok(())
     }
 
     fn set_input(&mut self, input: &str) -> AudioDeviceResult<()> {
-        self.input_device = self
-            .host
+        self.input_device = Host::new(self.api)?
             .iter_input_devices()
             .find(|device| device.name().contains(input))
             .ok_or(AudioDeviceError::NotAvailable)?
@@ -124,8 +120,7 @@ impl AudioDeviceTrait for AudioDevice {
     }
 
     fn set_output(&mut self, output: &str) -> AudioDeviceResult<()> {
-        self.output_device = self
-            .host
+        self.output_device = Host::new(self.api)?
             .iter_output_devices()
             .find(|device| device.name().contains(output))
             .ok_or(AudioDeviceError::NotAvailable)?
