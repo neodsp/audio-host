@@ -117,9 +117,7 @@ impl AudioBackend for AudioHost {
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
         let device = self
             .inputs()
-            .iter()
-            .cloned()
-            .find(|p| p.name.contains(input))
+            .iter().find(|&p| p.name.contains(input)).cloned()
             .ok_or(Error::NotFound)?;
         self.input_device = device.name.clone();
         Ok(())
@@ -128,9 +126,7 @@ impl AudioBackend for AudioHost {
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
         let device = self
             .outputs()
-            .iter()
-            .cloned()
-            .find(|p| p.name.contains(output))
+            .iter().find(|&p| p.name.contains(output)).cloned()
             .ok_or(Error::NotFound)?;
         self.output_device = device.name.clone();
         Ok(())
@@ -188,7 +184,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
     fn about_to_start(&mut self, device: &mut dyn cxx_juce::juce_audio_devices::AudioIODevice) {
         let num_input_channels = device.input_channels() as u16;
         let num_output_channels = device.output_channels() as u16;
-        let num_frames = device.buffer_size() as usize;
+        let num_frames = device.buffer_size();
         self.input_block = Interleaved::new(num_input_channels, num_frames);
         self.output_block = Interleaved::new(num_output_channels, num_frames);
     }
@@ -200,15 +196,15 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
     ) {
         // resize buffers
         self.input_block
-            .set_visible(input.channels() as u16, input.samples() as usize);
+            .set_visible(input.channels() as u16, input.samples());
         self.output_block
-            .set_visible(output.channels() as u16, output.samples() as usize);
+            .set_visible(output.channels() as u16, output.samples());
 
         // copy input
         for ch in 0..input.channels() {
             let channel = &input[ch];
             for frame in 0..input.samples() {
-                *self.input_block.sample_mut(ch as u16, frame as usize) = channel[frame as usize];
+                *self.input_block.sample_mut(ch as u16, frame) = channel[frame];
             }
         }
 
@@ -220,7 +216,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         for ch in 0..output.channels() {
             let channel = &mut output[ch];
             for frame in 0..num_samples {
-                channel[frame as usize] = self.output_block.sample(ch as u16, frame as usize);
+                channel[frame] = self.output_block.sample(ch as u16, frame);
             }
         }
     }
