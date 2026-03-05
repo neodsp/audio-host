@@ -61,15 +61,13 @@ impl AudioBackend for AudioHost {
 
     fn input(&self) -> String {
         self.input_device
-            .as_ref()
-            .and_then(|d| Some(d.description().unwrap().name().to_string()))
+            .as_ref().map(|d| d.description().unwrap().name().to_string())
             .unwrap_or_default()
     }
 
     fn output(&self) -> String {
         self.output_device
-            .as_ref()
-            .and_then(|d| Some(d.description().unwrap().name().to_string()))
+            .as_ref().map(|d| d.description().unwrap().name().to_string())
             .unwrap_or_default()
     }
 
@@ -81,7 +79,7 @@ impl AudioBackend for AudioHost {
                 devices
                     .filter_map(|device| {
                         let name = device.description().unwrap().name().to_string();
-                        let num_channels = device.default_input_config().ok()?.channels() as u16;
+                        let num_channels = device.default_input_config().ok()?.channels();
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()
@@ -97,7 +95,7 @@ impl AudioBackend for AudioHost {
                 devices
                     .filter_map(|device| {
                         let name = device.description().unwrap().name().to_string();
-                        let num_channels = device.default_output_config().ok()?.channels() as u16;
+                        let num_channels = device.default_output_config().ok()?.channels();
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()
@@ -106,13 +104,12 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        let host_id = cpal::available_hosts()
+        let host_id = *cpal::available_hosts()
             .iter()
             .find(|api| api.name().contains(name))
-            .ok_or(Error::NotFound)?
-            .clone();
+            .ok_or(Error::NotFound)?;
 
-        self.host = cpal::host_from_id(host_id.clone()).map_err(|e| Error::Backend(Box::new(e)))?;
+        self.host = cpal::host_from_id(host_id).map_err(|e| Error::Backend(Box::new(e)))?;
         self.host_id = host_id;
 
         self.input_device = self.host.default_input_device();
@@ -176,8 +173,8 @@ impl AudioBackend for AudioHost {
             (None, None)
         };
 
-        if has_input {
-            if let Some(input_device) = &self.input_device {
+        if has_input
+            && let Some(input_device) = &self.input_device {
                 let input_stream_config = StreamConfig {
                     channels: config.num_input_channels,
                     sample_rate: config.sample_rate,
@@ -206,7 +203,6 @@ impl AudioBackend for AudioHost {
                     .map_err(|e| Error::Backend(Box::new(e)))?;
                 self.input_stream = Some(input_stream);
             }
-        }
 
         if let Some(output_device) = &self.output_device {
             let output_stream_config = StreamConfig {
