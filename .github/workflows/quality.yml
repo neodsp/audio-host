@@ -1,0 +1,94 @@
+name: 🛡️ Quality Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-fmt:
+    name: 📝 Code Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  taplo-fmt:
+    name: 📄 TOML Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: uncenter/setup-taplo@v1
+      - run: taplo fmt --check
+
+  clippy:
+    name: 📎 Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: |
+          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features rtaudio
+          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features cpal
+          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features juce
+
+  doc:
+    name: 📚 Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --document-private-items
+
+  semver:
+    name: 🏷️ Semver Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+
+  msrv:
+    name: 🏗️ MSRV Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: |
+          cargo check --no-default-features --features rtaudio
+          cargo check --no-default-features --features cpal
+          cargo check --no-default-features --features juce
+
+  readme:
+    name: 📖 README Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-rdme
+      - run: cargo rdme --check
+
+  unused-dependencies:
+    name: ✂️ Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Cargo Shear
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+      - name: Run Cargo Shear
+        run: |
+          cargo shear

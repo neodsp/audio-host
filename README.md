@@ -1,3 +1,5 @@
+<!-- cargo-rdme start -->
+
 # audio-io
 
 A backend-agnostic Rust library for managing audio input and output devices. This crate provides a unified, high-level interface for interacting with various audio backends, allowing you to write audio application code that is independent of the underlying audio driver implementation.
@@ -108,3 +110,5 @@ fn main() -> Result<(), Error> {
 ```
 
 Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
+
+<!-- cargo-rdme end -->

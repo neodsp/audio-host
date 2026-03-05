@@ -61,13 +61,15 @@ impl AudioBackend for AudioHost {
 
     fn input(&self) -> String {
         self.input_device
-            .as_ref().map(|d| d.description().unwrap().name().to_string())
+            .as_ref()
+            .map(|d| d.description().unwrap().name().to_string())
             .unwrap_or_default()
     }
 
     fn output(&self) -> String {
         self.output_device
-            .as_ref().map(|d| d.description().unwrap().name().to_string())
+            .as_ref()
+            .map(|d| d.description().unwrap().name().to_string())
             .unwrap_or_default()
     }
 
@@ -173,36 +175,35 @@ impl AudioBackend for AudioHost {
             (None, None)
         };
 
-        if has_input
-            && let Some(input_device) = &self.input_device {
-                let input_stream_config = StreamConfig {
-                    channels: config.num_input_channels,
-                    sample_rate: config.sample_rate,
-                    buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
-                };
-                let input_stream = input_device
-                    .build_input_stream(
-                        &input_stream_config,
-                        move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                            if let Some(ref mut producer) = producer {
-                                for sample in data {
-                                    if producer.push(*sample).is_err() {
-                                        eprintln!(
-                                            "AudioHost: Could not push complete input into producer..."
-                                        );
-                                    }
+        if has_input && let Some(input_device) = &self.input_device {
+            let input_stream_config = StreamConfig {
+                channels: config.num_input_channels,
+                sample_rate: config.sample_rate,
+                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+            };
+            let input_stream = input_device
+                .build_input_stream(
+                    &input_stream_config,
+                    move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                        if let Some(ref mut producer) = producer {
+                            for sample in data {
+                                if producer.push(*sample).is_err() {
+                                    eprintln!(
+                                        "AudioHost: Could not push complete input into producer..."
+                                    );
                                 }
                             }
-                        },
-                        move |err| eprintln!("Error in input stream: {:?}", err),
-                        None,
-                    )
-                    .map_err(|e| Error::Backend(Box::new(e)))?;
-                input_stream
-                    .play()
-                    .map_err(|e| Error::Backend(Box::new(e)))?;
-                self.input_stream = Some(input_stream);
-            }
+                        }
+                    },
+                    move |err| eprintln!("Error in input stream: {:?}", err),
+                    None,
+                )
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            input_stream
+                .play()
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            self.input_stream = Some(input_stream);
+        }
 
         if let Some(output_device) = &self.output_device {
             let output_stream_config = StreamConfig {
