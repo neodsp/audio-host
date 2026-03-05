@@ -66,7 +66,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
-        Host::new(self.api.clone())
+        Host::new(self.api)
             .unwrap()
             .iter_input_devices()
             .map(|i| DeviceInfo {
@@ -77,7 +77,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn outputs(&self) -> Vec<DeviceInfo> {
-        Host::new(self.api.clone())
+        Host::new(self.api)
             .unwrap()
             .iter_output_devices()
             .map(|i| DeviceInfo {
@@ -88,11 +88,10 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        self.api = rtaudio::compiled_apis()
+        self.api = *rtaudio::compiled_apis()
             .iter()
             .find(|api| api.get_display_name().contains(name))
-            .ok_or(Error::NotFound)?
-            .clone();
+            .ok_or(Error::NotFound)?;
 
         let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
         self.input_device = host
@@ -164,7 +163,7 @@ impl AudioBackend for AudioHost {
         };
 
         self.stream_handle = Some(
-            Host::new(self.api.clone())
+            Host::new(self.api)
                 .map_err(|e| Error::Backend(Box::new(e)))?
                 .open_stream(&StreamConfig {
                     input_device: input_params,
