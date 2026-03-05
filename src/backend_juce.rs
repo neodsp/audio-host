@@ -117,7 +117,9 @@ impl AudioBackend for AudioHost {
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
         let device = self
             .inputs()
-            .iter().find(|&p| p.name.contains(input)).cloned()
+            .iter()
+            .find(|&p| p.name.contains(input))
+            .cloned()
             .ok_or(Error::NotFound)?;
         self.input_device = device.name.clone();
         Ok(())
@@ -126,7 +128,9 @@ impl AudioBackend for AudioHost {
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
         let device = self
             .outputs()
-            .iter().find(|&p| p.name.contains(output)).cloned()
+            .iter()
+            .find(|&p| p.name.contains(output))
+            .cloned()
             .ok_or(Error::NotFound)?;
         self.output_device = device.name.clone();
         Ok(())
@@ -203,6 +207,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         // copy input
         for ch in 0..input.channels() {
             let channel = &input[ch];
+            #[allow(clippy::needless_range_loop)]
             for frame in 0..input.samples() {
                 *self.input_block.sample_mut(ch as u16, frame) = channel[frame];
             }
@@ -215,6 +220,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         let num_samples = output.samples();
         for ch in 0..output.channels() {
             let channel = &mut output[ch];
+            #[allow(clippy::needless_range_loop)]
             for frame in 0..num_samples {
                 channel[frame] = self.output_block.sample(ch as u16, frame);
             }
