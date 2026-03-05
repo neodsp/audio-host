@@ -142,6 +142,7 @@ impl AudioHostTrait for AudioHost {
         process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), AudioHostError> {
         self.stop()?;
+        config.validate()?;
 
         let mut setup = self.device_manager.audio_device_setup();
         setup = setup.with_input_channels(ChannelCount::Custom(config.num_input_channels as i32));

@@ -18,6 +18,8 @@ pub use backend_rtaudio::AudioHost;
 pub enum AudioHostError {
     #[error("Device or API not found")]
     NotFound,
+    #[error("Invalid config: {0}")]
+    InvalidConfig(&'static str),
     #[error("Backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -34,13 +36,39 @@ pub struct DeviceInfo {
     pub num_channels: u16,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Config {
     pub num_input_channels: u16,
     pub num_output_channels: u16,
     pub sample_rate: u32,
     pub num_frames: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            num_input_channels: 2,
+            num_output_channels: 2,
+            sample_rate: 48000,
+            num_frames: 512,
+        }
+    }
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), AudioHostError> {
+        if self.num_input_channels == 0 && self.num_output_channels == 0 {
+            return Err(AudioHostError::InvalidConfig("at least one of num_input_channels or num_output_channels must be > 0"));
+        }
+        if self.sample_rate == 0 {
+            return Err(AudioHostError::InvalidConfig("sample_rate must be > 0"));
+        }
+        if self.num_frames == 0 {
+            return Err(AudioHostError::InvalidConfig("num_frames must be > 0"));
+        }
+        Ok(())
+    }
 }
 
 /// Trait defining the common interface for audio devices
