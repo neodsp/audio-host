@@ -1,12 +1,12 @@
 <!-- cargo-rdme start -->
 
-# audio-io
+# audio-host
 
 A backend-agnostic Rust library for managing audio input and output devices. This crate provides a unified, high-level interface for interacting with various audio backends, allowing you to write audio application code that is independent of the underlying audio driver implementation.
 
 ## Features
 
-`audio-io` abstracts over several popular audio backends. You can choose the one that best fits your needs via Cargo features.
+`audio-host` abstracts over several popular audio backends. You can choose the one that best fits your needs via Cargo features.
 
 **Available Backends:**
 
@@ -22,20 +22,20 @@ These backends are mutually exclusive. Trying to enable more than one (e.g., `cp
 
 ## Installation
 
-Add `audio-io` to your `Cargo.toml`.
+Add `audio-host` to your `Cargo.toml`.
 
 To use the default backend (`rtaudio`):
 
 ```toml
 [dependencies]
-audio-io = "0.5.0"
+audio-host = "0.5.0"
 ```
 
 To use a specific backend (e.g., `cpal`), disable the default features:
 
 ```toml
 [dependencies]
-audio-io = { version = "0.5.0", default-features = false, features = ["cpal"] }
+audio-host = { version = "0.5.0", default-features = false, features = ["cpal"] }
 ```
 
 ## Usage
@@ -43,7 +43,7 @@ audio-io = { version = "0.5.0", default-features = false, features = ["cpal"] }
 ### Listing devices
 
 ```rust
-use audio_io::{AudioHost, Error, AudioBackend};
+use audio_host::{AudioHost, Error, AudioBackend};
 
 fn main() -> Result<(), Error> {
     let host = AudioHost::new()?;
@@ -62,7 +62,7 @@ fn main() -> Result<(), Error> {
 Call `set_api`, `set_input`, or `set_output` with a substring of the desired name before starting the stream. Each returns `Err(Error::NotFound)` if no matching device is found.
 
 ```rust
-use audio_io::{AudioHost, Error, AudioBackend, Config};
+use audio_host::{AudioHost, Error, AudioBackend, Config};
 
 fn main() -> Result<(), Error> {
     let mut host = AudioHost::new()?;
@@ -83,7 +83,7 @@ fn main() -> Result<(), Error> {
 ### Starting a stream
 
 ```rust
-use audio_io::{AudioBlockOpsMut, AudioHost, Error, AudioBackend, Config};
+use audio_host::{AudioBlockOpsMut, AudioHost, Error, AudioBackend, Config};
 
 fn main() -> Result<(), Error> {
     let mut host = AudioHost::new()?;

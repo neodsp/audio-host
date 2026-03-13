@@ -4,9 +4,9 @@ categories = ["multimedia::audio"]
 description = "A simple library to play and record audio in real-time"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-name = "audio-io"
+name = "audio-host"
 readme = "README.md"
-repository = "https://github.com/neodsp/audio-io"
+repository = "https://github.com/neodsp/audio-host"
 version = "0.5.0"
 
 [dependencies]
