@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 name = "audio-host"
 readme = "README.md"
 repository = "https://github.com/neodsp/audio-host"
-version = "0.5.0"
+version = "0.1.0"
 
 [dependencies]
 audio-blocks = "0.7.0"
