@@ -26,7 +26,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! audio-host = "0.5.0"
+//! audio-host = "0.1.0"
 //! ```
 //!
 //! To use a specific backend (e.g., `cpal`), disable the default features:
