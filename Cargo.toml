@@ -15,7 +15,9 @@ rtrb = "0.3.2"
 thiserror = "2.0.17"
 
 cpal = { version = "0.17.3", optional = true }
-cxx-juce = { version = "0.8.0", features = ["juce-8"], optional = true }
+cxx-juce = { git = "https://github.com/JamesHallowell/cxx-juce", features = [
+  "juce-8",
+], optional = true }
 rtaudio = { version = "0.8.0", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 
