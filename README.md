@@ -20,32 +20,6 @@ A backend-agnostic Rust library for managing audio input and output devices. Thi
 
 These backends are mutually exclusive. Trying to enable more than one (e.g., `cpal` and `juce` together) will result in a compile-time error.
 
-### Optional CPAL features
-
-These opt-in features enable `cpal` automatically and can be combined. Disable default
-features to avoid also enabling RtAudio. The CPAL dependency is pinned to a GitHub revision.
-
-| Feature | Purpose and requirements |
-| --- | --- |
-| `cpal-pipewire` | Native PipeWire on Linux/BSD; requires PipeWire development libraries and a running server. |
-| `cpal-asio` | ASIO on Windows; requires an ASIO driver and LLVM/Clang for build-time bindings (see [CPAL's ASIO setup](https://github.com/RustAudio/cpal#asio-on-windows)). |
-| `cpal-jack` | JACK on Linux/BSD, macOS, and Windows; requires JACK libraries and a running JACK-compatible server. |
-| `cpal-pulseaudio` | Native PulseAudio on Linux/BSD; requires PulseAudio client libraries and a compatible server. |
-| `cpal-realtime` | Real-time thread scheduling on supported Android/Linux/Windows hosts; Linux needs appropriate scheduling permissions. |
-| `cpal-realtime-dbus` | Adds D-Bus/RTKit scheduling support on Linux; requires D-Bus development libraries and an available RTKit service. Includes `cpal-realtime`. |
-
-ALSA on Linux, CoreAudio on macOS, and WASAPI on Windows need no extra CPAL feature.
-Features enable host availability, not automatic host selection. Use `host.apis()` to
-list available APIs and `host.set_api("PipeWire")`, `host.set_api("JACK")`, or
-`host.set_api("ASIO")` before selecting devices and starting audio. Duplex support is
-still detected per device; enabling a host feature does not guarantee a duplex stream.
-
-For example, build with PipeWire and RTKit support:
-
-```sh
-cargo check --no-default-features --features cpal-pipewire,cpal-realtime-dbus
-```
-
 ## Installation
 
 Add `audio-host` to your `Cargo.toml`.
@@ -142,5 +116,38 @@ fn main() -> Result<(), Error> {
 ```
 
 Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
+
+## Optional CPAL features
+
+These opt-in features enable `cpal` automatically and can be combined. Disable default
+features to avoid also enabling RtAudio. The CPAL dependency is pinned to a GitHub revision.
+
+| Feature | Purpose and requirements |
+| --- | --- |
+| `cpal-pipewire` | Native PipeWire on Linux/BSD; requires PipeWire development libraries and a running server. |
+| `cpal-asio` | ASIO on Windows; requires an ASIO driver and LLVM/Clang for build-time bindings (see [CPAL's ASIO setup](https://github.com/RustAudio/cpal#asio-on-windows)). |
+| `cpal-jack` | JACK on Linux/BSD, macOS, and Windows; requires JACK libraries and a running JACK-compatible server. |
+| `cpal-pulseaudio` | Native PulseAudio on Linux/BSD; requires PulseAudio client libraries and a compatible server. |
+| `cpal-realtime` | Real-time thread scheduling on supported Android/Linux/Windows hosts; Linux needs appropriate scheduling permissions. |
+| `cpal-realtime-dbus` | Adds D-Bus/RTKit scheduling support on Linux; requires D-Bus development libraries and an available RTKit service. Includes `cpal-realtime`. |
+
+ALSA on Linux, CoreAudio on macOS, and WASAPI on Windows need no extra CPAL feature.
+Features enable host availability, not automatic host selection. Use `host.apis()` to
+list available APIs and `host.set_api("PipeWire")`, `host.set_api("JACK")`, or
+`host.set_api("ASIO")` before selecting devices and starting audio. Duplex support is
+still detected per device; enabling a host feature does not guarantee a duplex stream.
+
+For a typical Linux desktop using CPAL, `cpal-pipewire` together with
+`cpal-realtime-dbus` is a sensible configuration: it combines native PipeWire audio
+with RTKit-assisted real-time scheduling. This assumes PipeWire and RTKit are
+available, along with the development libraries listed above. `cpal-realtime-dbus`
+already includes `cpal-realtime`, so there is no need to enable both explicitly.
+Real-time priority still depends on the system granting it.
+
+Build with these features, then select the host with `host.set_api("PipeWire")`:
+
+```sh
+cargo check --no-default-features --features cpal-pipewire,cpal-realtime-dbus
+```
 
 <!-- cargo-rdme end -->
