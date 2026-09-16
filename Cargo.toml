@@ -21,6 +21,12 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 cpal = ["dep:cpal"]
+cpal-asio = ["cpal", "cpal/asio"]
+cpal-jack = ["cpal", "cpal/jack"]
+cpal-pipewire = ["cpal", "cpal/pipewire"]
+cpal-pulseaudio = ["cpal", "cpal/pulseaudio"]
+cpal-realtime = ["cpal", "cpal/realtime"]
+cpal-realtime-dbus = ["cpal-realtime", "cpal/realtime-dbus"]
 default = ["rtaudio"]
 juce = ["dep:cxx-juce"]
 rtaudio = ["dep:rtaudio"]
