@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use audio_blocks::Interleaved;
 use cpal::{
-    Stream, StreamConfig,
+    DuplexStreamConfig, Stream, StreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use rtrb::RingBuffer;
@@ -16,13 +16,40 @@ pub struct AudioHost {
     output_device: Option<cpal::Device>,
     output_stream: Option<Stream>,
     input_stream: Option<Stream>,
+    duplex_stream: Option<Stream>,
+}
+
+impl AudioHost {
+    /// Returns whether the host currently owns a started duplex stream.
+    ///
+    /// Returns `false` before starting, after stopping, or when using separate streams.
+    /// This reports the selected stream mode, not device capability or stream health
+    /// after an asynchronous backend error.
+    pub fn is_duplex(&self) -> bool {
+        self.duplex_stream.is_some()
+    }
 }
 
 impl Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stream_mode = if self.is_duplex() {
+            "duplex"
+        } else {
+            match (self.input_stream.is_some(), self.output_stream.is_some()) {
+                (true, true) => "separate",
+                (false, true) => "output-only",
+                (true, false) => "input-only",
+                (false, false) => "stopped",
+            }
+        };
+
         f.debug_struct("AudioHost")
             .field("backend", &"CPAL")
-            .field("is_running", &self.output_stream.is_some())
+            .field(
+                "is_running",
+                &(self.output_stream.is_some() || self.duplex_stream.is_some()),
+            )
+            .field("stream_mode", &stream_mode)
             .field("apis", &self.apis())
             .field("inputs", &self.inputs())
             .field("outputs", &self.outputs())
@@ -45,6 +72,7 @@ impl AudioBackend for AudioHost {
             output_device,
             output_stream: None,
             input_stream: None,
+            duplex_stream: None,
         })
     }
 
@@ -159,6 +187,36 @@ impl AudioBackend for AudioHost {
             return Err(Error::NotFound);
         }
 
+        if has_input
+            && let (Some(input_device), Some(output_device)) =
+                (&self.input_device, &self.output_device)
+            && input_device == output_device
+            && input_device.supports_duplex()
+        {
+            let duplex_config = DuplexStreamConfig {
+                input_channels: config.num_input_channels,
+                output_channels: config.num_output_channels,
+                sample_rate: config.sample_rate,
+                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+            };
+            let stream = input_device
+                .build_duplex_stream(
+                    duplex_config,
+                    move |input: &[f32], output: &mut [f32], _: &cpal::DuplexCallbackInfo| {
+                        process_fn(
+                            Block::from_slice(input, config.num_input_channels),
+                            BlockMut::from_slice(output, config.num_output_channels),
+                        );
+                    },
+                    move |err| eprintln!("Error in duplex stream: {err}"),
+                    None,
+                )
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            stream.start().map_err(|e| Error::Backend(Box::new(e)))?;
+            self.duplex_stream = Some(stream);
+            return Ok(());
+        }
+
         let (mut producer, mut consumer) = if has_input {
             let latency_ms = 100;
             let latency_samples = (latency_ms as f64 / 1000.0 * config.sample_rate as f64) as usize
@@ -183,8 +241,8 @@ impl AudioBackend for AudioHost {
             };
             let input_stream = input_device
                 .build_input_stream(
-                    &input_stream_config,
-                    move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                    input_stream_config,
+                    move |data: &[f32], _info: &cpal::CallbackInfo| {
                         if let Some(ref mut producer) = producer {
                             for sample in data {
                                 if producer.push(*sample).is_err() {
@@ -200,7 +258,7 @@ impl AudioBackend for AudioHost {
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             input_stream
-                .play()
+                .start()
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             self.input_stream = Some(input_stream);
         }
@@ -220,8 +278,8 @@ impl AudioBackend for AudioHost {
 
             let output_stream = output_device
                 .build_output_stream(
-                    &output_stream_config,
-                    move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                    output_stream_config,
+                    move |data: &mut [f32], _info: &cpal::CallbackInfo| {
                         if let Some(ref mut consumer) = consumer {
                             for frame in input_block.frames_mut() {
                                 for sample in frame {
@@ -242,7 +300,7 @@ impl AudioBackend for AudioHost {
                 .map_err(|e| Error::Backend(Box::new(e)))?;
 
             output_stream
-                .play()
+                .start()
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             self.output_stream = Some(output_stream);
         }
@@ -251,6 +309,9 @@ impl AudioBackend for AudioHost {
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        if let Some(stream) = self.duplex_stream.take() {
+            stream.pause().map_err(|e| Error::Backend(Box::new(e)))?;
+        }
         if let Some(stream) = self.output_stream.take() {
             stream.pause().map_err(|e| Error::Backend(Box::new(e)))?;
         }

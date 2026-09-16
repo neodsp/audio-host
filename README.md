@@ -80,6 +80,12 @@ fn main() -> Result<(), Error> {
 > default that does not appear in the `inputs()` / `outputs()` lists. In that case, omit the
 > `set_input` / `set_output` calls and rely on the default selected by `AudioHost::new()`.
 
+With the CPAL backend, selecting the same duplex-capable device for input and output
+uses a single duplex callback, without the separate-stream input ring buffer or its
+100 ms prefill. Both directions must be enabled. Different devices or devices without
+native duplex support use separate streams. A duplex build/start failure is returned
+as an error rather than retried with separate streams.
+
 ### Starting a stream
 
 ```rust

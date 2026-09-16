@@ -14,7 +14,7 @@ audio-blocks = "0.7.0"
 rtrb = "0.4.0"
 thiserror = "2.0.17"
 
-cpal = { version = "0.18.2", optional = true }
+cpal = { git = "https://github.com/RustAudio/cpal", rev = "c81153143724d91fce4161a15cb895b2cfab7da7", optional = true }
 cxx-juce = { version = "0.8.0", optional = true }
 rtaudio = { git = "https://github.com/neodsp/rtaudio-rs", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
