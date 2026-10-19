@@ -1,4 +1,4 @@
-name: 🛡️ Quality Checks
+name: Quality Checks
 
 on:
   push:
@@ -6,56 +6,77 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   cargo-fmt:
-    name: 📝 Code Format
+    name: Code Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --check
 
   taplo-fmt:
-    name: 📄 TOML Format
+    name: TOML Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: uncenter/setup-taplo@v1
+      - uses: actions/checkout@v7
+      - uses: uncenter/setup-taplo@v2
       - run: taplo fmt --check
 
   clippy:
-    name: 📎 Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.os }}, ${{ matrix.backend }}${{ matrix.serde && ' + serde' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        backend: [rtaudio, cpal, juce]
+        serde: [false]
+        include:
+          - os: ubuntu-latest
+            backend: rtaudio
+            serde: true
+          - os: ubuntu-latest
+            backend: cpal
+            serde: true
+          - os: ubuntu-latest
+            backend: juce
+            serde: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      FEATURES: ${{ matrix.backend }}${{ matrix.serde && ',serde' || '' }}
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: |
-          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features rtaudio
-          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features cpal
-          RUSTFLAGS="-D warnings" cargo clippy --no-default-features --features juce
-
-  doc:
-    name: 📚 Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --document-private-items
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.FEATURES }}
+      - run: cargo clippy --locked --all-targets --no-default-features --features "$FEATURES" -- -D warnings
+      - if: runner.os == 'Linux'
+        run: cargo doc --locked --no-deps --document-private-items --no-default-features --features "$FEATURES"
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   semver:
-    name: 🏷️ Semver Checks
+    name: Semver Checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: obi1kenobi/cargo-semver-checks-action@v2
@@ -63,38 +84,43 @@ jobs:
           feature-group: default-features
 
   msrv:
-    name: 🏗️ MSRV Check
+    name: MSRV Check (${{ matrix.backend }}${{ matrix.serde && ' + serde' || '' }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [rtaudio, cpal, juce]
+        serde: [false, true]
+    env:
+      FEATURES: ${{ matrix.backend }}${{ matrix.serde && ',serde' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
-      - run: |
-          cargo check --no-default-features --features rtaudio
-          cargo check --no-default-features --features cpal
-          cargo check --no-default-features --features juce
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.FEATURES }}
+      - run: cargo check --locked --all-targets --no-default-features --features "$FEATURES"
 
   readme:
-    name: 📖 README Check
+    name: README Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-rdme
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-rdme
       - run: cargo rdme --check
 
   unused-dependencies:
-    name: ✂️ Unused Dependencies
+    name: Unused Dependencies
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Cargo Shear
-        uses: taiki-e/install-action@v2
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-shear
-      - name: Run Cargo Shear
-        run: |
-          cargo shear
+      - run: cargo shear
