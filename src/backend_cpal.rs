@@ -183,7 +183,7 @@ impl AudioBackend for AudioHost {
             };
             let input_stream = input_device
                 .build_input_stream(
-                    &input_stream_config,
+                    input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
                         if let Some(ref mut producer) = producer {
                             for sample in data {
@@ -220,7 +220,7 @@ impl AudioBackend for AudioHost {
 
             let output_stream = output_device
                 .build_output_stream(
-                    &output_stream_config,
+                    output_stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
                         if let Some(ref mut consumer) = consumer {
                             for frame in input_block.frames_mut() {
