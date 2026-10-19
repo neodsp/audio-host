@@ -2,9 +2,6 @@
 
 ## System dependencies for `rtaudio`
 
-The `rtaudio` backend (enabled by default) builds the RtAudio C++ library from source, which
-requires a C++ compiler, CMake, pkg-config, and the ALSA and PulseAudio development headers.
-
 ### Ubuntu/Debian
 
 ```sh
@@ -19,10 +16,6 @@ sudo dnf install cmake gcc-c++ pkgconf-pkg-config alsa-lib-devel pulseaudio-libs
 ```
 
 ## System dependencies for `juce`
-
-The `juce` backend builds JUCE from source with CMake. In addition to CMake, pkg-config, a C++
-compiler, and the ALSA headers listed above, it requires the X11, FreeType, and Fontconfig
-development headers.
 
 ### Ubuntu/Debian
 
