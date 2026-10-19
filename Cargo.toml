@@ -6,8 +6,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 name = "audio-host"
 readme = "README.md"
-rust-version = "1.88"
 repository = "https://github.com/neodsp/audio-host"
+rust-version = "1.88"
 version = "0.1.1"
 
 [dependencies]
