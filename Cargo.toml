@@ -8,7 +8,7 @@ name = "audio-host"
 readme = "README.md"
 rust-version = "1.88"
 repository = "https://github.com/neodsp/audio-host"
-version = "0.1.0"
+version = "0.1.1"
 
 [dependencies]
 audio-blocks = "0.7.0"
