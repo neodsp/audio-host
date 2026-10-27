@@ -13,7 +13,7 @@ use cpal::{
 };
 use rtrb::RingBuffer;
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error};
+use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
 
 /// Input latency added to duplex streams. cpal runs input and output as two streams, so the
 /// input goes through a ring buffer that absorbs timing differences between them.
@@ -134,10 +134,12 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        let host_id = *cpal::available_hosts()
-            .iter()
-            .find(|api| api.name().contains(name))
-            .ok_or(Error::NotFound)?;
+        let host_id = find_by_name(
+            cpal::available_hosts(),
+            |api| Some(api.name().to_string()),
+            name,
+        )
+        .ok_or(Error::NotFound)?;
 
         self.host = cpal::host_from_id(host_id).map_err(|e| Error::Backend(Box::new(e)))?;
         self.host_id = host_id;
@@ -149,24 +151,22 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
-        let device = self
+        let devices = self
             .host
             .input_devices()
-            .map_err(|e| Error::Backend(Box::new(e)))?
-            .find(|device| device_name(device).is_some_and(|name| name.contains(input)))
-            .ok_or(Error::NotFound)?;
+            .map_err(|e| Error::Backend(Box::new(e)))?;
+        let device = find_by_name(devices, device_name, input).ok_or(Error::NotFound)?;
 
         self.input_device = Some(device);
         Ok(())
     }
 
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
-        let device = self
+        let devices = self
             .host
             .output_devices()
-            .map_err(|e| Error::Backend(Box::new(e)))?
-            .find(|device| device_name(device).is_some_and(|name| name.contains(output)))
-            .ok_or(Error::NotFound)?;
+            .map_err(|e| Error::Backend(Box::new(e)))?;
+        let device = find_by_name(devices, device_name, output).ok_or(Error::NotFound)?;
 
         self.output_device = Some(device);
         Ok(())

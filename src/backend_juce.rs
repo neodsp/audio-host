@@ -9,7 +9,7 @@ use cxx_juce::{
     },
 };
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error};
+use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
 
 pub struct AudioHost {
     _juce: JUCE,
@@ -102,10 +102,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        let api = self
-            .apis
-            .iter()
-            .find(|api| api.contains(name))
+        let api = find_by_name(self.apis.iter(), |api| Some(api.to_string()), name)
             .cloned()
             .ok_or(Error::NotFound)?;
 
@@ -127,24 +124,16 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
-        let device = self
-            .inputs()
-            .iter()
-            .find(|&p| p.name.contains(input))
-            .cloned()
-            .ok_or(Error::NotFound)?;
-        self.input_device = device.name.clone();
+        let device =
+            find_by_name(self.inputs(), |d| Some(d.name.clone()), input).ok_or(Error::NotFound)?;
+        self.input_device = device.name;
         Ok(())
     }
 
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
-        let device = self
-            .outputs()
-            .iter()
-            .find(|&p| p.name.contains(output))
-            .cloned()
+        let device = find_by_name(self.outputs(), |d| Some(d.name.clone()), output)
             .ok_or(Error::NotFound)?;
-        self.output_device = device.name.clone();
+        self.output_device = device.name;
         Ok(())
     }
 

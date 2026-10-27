@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use rtaudio::{DeviceParams, Host, StreamConfig, StreamFlags, StreamHandle};
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error};
+use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
 
 pub struct AudioHost {
     api: rtaudio::Api,
@@ -90,10 +90,12 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        self.api = *rtaudio::compiled_apis()
-            .iter()
-            .find(|api| api.get_display_name().contains(name))
-            .ok_or(Error::NotFound)?;
+        self.api = find_by_name(
+            rtaudio::compiled_apis().iter().copied(),
+            |api| Some(api.get_display_name()),
+            name,
+        )
+        .ok_or(Error::NotFound)?;
 
         let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
         self.input_device = host
@@ -109,26 +111,26 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
-        self.input_device = Some(
-            Host::new(self.api)
-                .map_err(|e| Error::Backend(Box::new(e)))?
-                .iter_input_devices()
-                .find(|device| device.name().contains(input))
-                .ok_or(Error::NotFound)?
-                .clone(),
-        );
+        let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
+        let device = find_by_name(
+            host.iter_input_devices(),
+            |d| Some(d.name().to_string()),
+            input,
+        )
+        .ok_or(Error::NotFound)?;
+        self.input_device = Some(device.clone());
         Ok(())
     }
 
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
-        self.output_device = Some(
-            Host::new(self.api)
-                .map_err(|e| Error::Backend(Box::new(e)))?
-                .iter_output_devices()
-                .find(|device| device.name().contains(output))
-                .ok_or(Error::NotFound)?
-                .clone(),
-        );
+        let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
+        let device = find_by_name(
+            host.iter_output_devices(),
+            |d| Some(d.name().to_string()),
+            output,
+        )
+        .ok_or(Error::NotFound)?;
+        self.output_device = Some(device.clone());
         Ok(())
     }
 

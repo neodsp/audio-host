@@ -59,7 +59,7 @@ fn main() -> Result<(), Error> {
 
 ### Selecting devices
 
-Call `set_api`, `set_input`, or `set_output` with a substring of the desired name before starting the stream. Each returns `Err(Error::NotFound)` if no matching device is found.
+Call `set_api`, `set_input`, or `set_output` with the full name or a part of it before starting the stream. An exact match is preferred, otherwise the first name containing the text is used. Each returns `Err(Error::NotFound)` if no matching device is found.
 
 ```rust
 use audio_host::{AudioHost, Error, AudioBackend, Config};

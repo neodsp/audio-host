@@ -57,7 +57,7 @@
 //!
 //! ### Selecting devices
 //!
-//! Call `set_api`, `set_input`, or `set_output` with a substring of the desired name before starting the stream. Each returns `Err(Error::NotFound)` if no matching device is found.
+//! Call `set_api`, `set_input`, or `set_output` with the full name or a part of it before starting the stream. An exact match is preferred, otherwise the first name containing the text is used. Each returns `Err(Error::NotFound)` if no matching device is found.
 //!
 //! ```rust,no_run
 //! use audio_host::{AudioHost, Error, AudioBackend, Config};
@@ -154,6 +154,24 @@ pub enum Error {
     UnsupportedSampleRate { requested: u32, available: Vec<u32> },
     #[error("Backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// Finds the item whose name matches `query`: an exact match wins, otherwise the first name
+/// that contains `query`. Items without a name are skipped.
+pub(crate) fn find_by_name<T>(
+    items: impl IntoIterator<Item = T>,
+    name: impl Fn(&T) -> Option<String>,
+    query: &str,
+) -> Option<T> {
+    let mut partial = None;
+    for item in items {
+        match name(&item) {
+            Some(n) if n == query => return Some(item),
+            Some(n) if partial.is_none() && n.contains(query) => partial = Some(item),
+            _ => {}
+        }
+    }
+    partial
 }
 
 fn channel_message(direction: &str, requested: u16, supported: u16) -> String {
@@ -315,6 +333,23 @@ mod tests {
                 "{config:?} should be invalid"
             );
         }
+    }
+
+    #[test]
+    fn find_by_name_prefers_exact_match() {
+        let names = ["USB Speakers", "Speakers (2)", "Speakers"];
+        let find = |query| find_by_name(names, |n| Some(n.to_string()), query);
+        assert_eq!(find("Speakers"), Some("Speakers"));
+        assert_eq!(find("Speak"), Some("USB Speakers"));
+        assert_eq!(find("(2)"), Some("Speakers (2)"));
+        assert_eq!(find("Headphones"), None);
+    }
+
+    #[test]
+    fn find_by_name_skips_unnamed_items() {
+        let items = [None, Some("Speakers")];
+        let found = find_by_name(items, |n| n.map(str::to_string), "Speakers");
+        assert_eq!(found, Some(Some("Speakers")));
     }
 
     #[test]
