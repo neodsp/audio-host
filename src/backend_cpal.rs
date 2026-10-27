@@ -1,10 +1,4 @@
-use std::{
-    fmt::Debug,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{fmt::Debug, sync::Arc};
 
 use audio_blocks::{AudioBlockMut, Interleaved};
 use cpal::{
@@ -13,7 +7,10 @@ use cpal::{
 };
 use rtrb::RingBuffer;
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
+use crate::{
+    AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, StatusTracker, StreamError,
+    StreamStatus, find_by_name,
+};
 
 /// Input latency added to duplex streams. cpal runs input and output as two streams, so the
 /// input goes through a ring buffer that absorbs timing differences between them.
@@ -29,10 +26,7 @@ pub struct AudioHost {
     output_device: Option<cpal::Device>,
     output_stream: Option<Stream>,
     input_stream: Option<Stream>,
-    /// Duplex only: input samples dropped because the ring buffer was full.
-    dropped_input_samples: Arc<AtomicUsize>,
-    /// Duplex only: input samples replaced by silence because the ring buffer was empty.
-    missing_input_samples: Arc<AtomicUsize>,
+    status: Arc<StatusTracker>,
 }
 
 impl Debug for AudioHost {
@@ -65,8 +59,7 @@ impl AudioBackend for AudioHost {
             output_device,
             output_stream: None,
             input_stream: None,
-            dropped_input_samples: Arc::default(),
-            missing_input_samples: Arc::default(),
+            status: Arc::default(),
         })
     }
 
@@ -179,6 +172,7 @@ impl AudioBackend for AudioHost {
     ) -> Result<(), Error> {
         self.stop()?;
         config.validate()?;
+        self.status.reset();
 
         let num_input_channels = config.num_input_channels;
         let num_output_channels = config.num_output_channels;
@@ -265,7 +259,7 @@ impl AudioBackend for AudioHost {
                         let output_block = BlockMut::from_slice(&mut [], 1);
                         process_fn(input_block, output_block);
                     },
-                    move |err| eprintln!("Error in input stream: {:?}", err),
+                    error_handler(&self.status),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
@@ -273,6 +267,7 @@ impl AudioBackend for AudioHost {
                 .play()
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             self.input_stream = Some(input_stream);
+            self.status.set_running(true);
             return Ok(());
         }
 
@@ -293,11 +288,9 @@ impl AudioBackend for AudioHost {
             (None, None)
         };
 
-        // the audio threads only count problems, printing there could block them
-        self.dropped_input_samples.store(0, Ordering::Relaxed);
-        self.missing_input_samples.store(0, Ordering::Relaxed);
-        let dropped_input_samples = self.dropped_input_samples.clone();
-        let missing_input_samples = self.missing_input_samples.clone();
+        // ring buffer overruns and underruns count as xruns
+        let input_status = self.status.clone();
+        let output_status = self.status.clone();
 
         if has_input && let Some(input_device) = &self.input_device {
             let input_stream = input_device
@@ -308,11 +301,11 @@ impl AudioBackend for AudioHost {
                             let dropped =
                                 data.iter().filter(|&&s| producer.push(s).is_err()).count();
                             if dropped > 0 {
-                                dropped_input_samples.fetch_add(dropped, Ordering::Relaxed);
+                                input_status.add_xrun();
                             }
                         }
                     },
-                    move |err| eprintln!("Error in input stream: {:?}", err),
+                    error_handler(&self.status),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
@@ -358,7 +351,7 @@ impl AudioBackend for AudioHost {
                                     }
                                 }
                                 if missing > 0 {
-                                    missing_input_samples.fetch_add(missing, Ordering::Relaxed);
+                                    output_status.add_xrun();
                                 }
                             }
 
@@ -366,7 +359,7 @@ impl AudioBackend for AudioHost {
                             process_fn(input_block.view(), output_block);
                         }
                     },
-                    move |err| eprintln!("Error in output stream: {:?}", err),
+                    error_handler(&self.status),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
@@ -377,25 +370,34 @@ impl AudioBackend for AudioHost {
             self.output_stream = Some(output_stream);
         }
 
+        self.status.set_running(true);
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        // not running first, so errors while closing aren't reported
+        self.status.set_running(false);
         // dropping a stream stops and closes it; pausing first fails on devices that can't
         // pause (e.g. ALSA through PipeWire)
         self.output_stream = None;
         self.input_stream = None;
-
-        // report duplex problems once, outside the audio threads
-        let dropped = self.dropped_input_samples.swap(0, Ordering::Relaxed);
-        let missing = self.missing_input_samples.swap(0, Ordering::Relaxed);
-        if dropped > 0 || missing > 0 {
-            eprintln!(
-                "AudioHost: input and output streams drifted apart: \
-                 {dropped} input samples dropped, {missing} replaced by silence"
-            );
-        }
         Ok(())
+    }
+
+    fn status(&self) -> StreamStatus {
+        self.status.status()
+    }
+}
+
+/// Error callback for a cpal stream, feeding the stream status.
+fn error_handler(status: &Arc<StatusTracker>) -> impl FnMut(cpal::Error) + Send + 'static {
+    let status = status.clone();
+    move |error| match error.kind() {
+        cpal::ErrorKind::Xrun => status.add_xrun(),
+        // the stream keeps running in these cases
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::ResourceExhausted => {}
+        cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
+        _ => status.fail(StreamError::Backend(error.to_string())),
     }
 }
 

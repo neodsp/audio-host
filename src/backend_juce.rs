@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
 
 use audio_blocks::{AudioBlock, AudioBlockMut, Interleaved};
 use cxx_juce::{
@@ -9,7 +9,10 @@ use cxx_juce::{
     },
 };
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
+use crate::{
+    AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, StatusTracker, StreamError,
+    StreamStatus, find_by_name,
+};
 
 pub struct AudioHost {
     _juce: JUCE,
@@ -18,6 +21,7 @@ pub struct AudioHost {
     input_device: String,
     output_device: String,
     handle: Option<AudioCallbackHandle>,
+    status: Arc<StatusTracker>,
 }
 
 impl Debug for AudioHost {
@@ -47,6 +51,7 @@ impl AudioBackend for AudioHost {
             input_device: String::new(),
             output_device: String::new(),
             handle: None,
+            status: Arc::default(),
         };
         host.select_default_devices()?;
         Ok(host)
@@ -144,6 +149,7 @@ impl AudioBackend for AudioHost {
     ) -> Result<(), Error> {
         self.stop()?;
         config.validate()?;
+        self.status.reset();
 
         if config.num_input_channels > 0 && self.input_device.is_empty() {
             return Err(Error::UnsupportedInputChannels {
@@ -234,21 +240,28 @@ impl AudioBackend for AudioHost {
             return Err(error);
         }
 
+        self.status.set_running(true);
         self.handle = Some(
             self.device_manager
-                .add_audio_callback(AudioCallback::new(process_fn)),
+                .add_audio_callback(AudioCallback::new(process_fn, self.status.clone())),
         );
 
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        // not running first, so the callback's `stopped` isn't reported as an error
+        self.status.set_running(false);
         if let Some(handle) = self.handle.take() {
             self.device_manager.remove_audio_callback(handle);
         }
         // release the devices, like the other backends do
         self.close_device();
         Ok(())
+    }
+
+    fn status(&self) -> StreamStatus {
+        self.status.status()
     }
 }
 
@@ -281,14 +294,16 @@ struct AudioCallback<F: FnMut(Block, BlockMut) + Send + 'static> {
     process_fn: F,
     input_block: Interleaved<f32>,
     output_block: Interleaved<f32>,
+    status: Arc<StatusTracker>,
 }
 
 impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioCallback<F> {
-    pub fn new(process_fn: F) -> Self {
+    pub fn new(process_fn: F, status: Arc<StatusTracker>) -> Self {
         Self {
             process_fn,
             input_block: Interleaved::new(0, 0),
             output_block: Interleaved::new(0, 0),
+            status,
         }
     }
 }
@@ -336,5 +351,11 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         }
     }
 
-    fn stopped(&mut self) {}
+    fn stopped(&mut self) {
+        // `stop` marks the stream as not running first, so this is the device stopping on its
+        // own. cxx-juce doesn't pass on JUCE's error message.
+        self.status.fail(StreamError::Backend(
+            "audio device stopped unexpectedly".into(),
+        ));
+    }
 }

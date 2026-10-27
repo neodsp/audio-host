@@ -249,6 +249,32 @@ fn unusual_sample_rate_runs_or_reports_working_rates() {
 
 #[test]
 #[ignore = "needs audio hardware"]
+fn status_reports_running_and_stopped() {
+    let _lock = lock_devices();
+    let mut host = AudioHost::new().unwrap();
+    assert!(!host.status().running);
+
+    host.start(Config::default(), |_input, mut output| output.clear())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let status = host.status();
+    assert!(status.running, "{status:?}");
+    assert_eq!(status.error, None);
+    if status.xruns > 0 {
+        eprintln!("note: {} xruns while running", status.xruns);
+    }
+
+    host.stop().unwrap();
+    let status = host.status();
+    assert!(!status.running);
+    assert_eq!(
+        status.error, None,
+        "stop() must not be reported as an error"
+    );
+}
+
+#[test]
+#[ignore = "needs audio hardware"]
 fn stream_can_be_restarted() {
     let _lock = lock_devices();
     let mut host = AudioHost::new().unwrap();

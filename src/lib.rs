@@ -114,6 +114,37 @@
 //! `Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
 //! device supports, so you can retry with a supported config. `num_frames` is only a request:
 //! the process callback can receive blocks of a different size.
+//!
+//! ### Monitoring the stream
+//!
+//! Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
+//! is still running, why it stopped on its own (e.g. the device was unplugged) and how many
+//! dropouts (xruns) happened. Streams aren't restarted automatically: call `start` again or
+//! pick another device.
+//!
+//! ```rust,no_run
+//! use audio_host::{AudioBackend, AudioHost, Config, Error};
+//!
+//! fn main() -> Result<(), Error> {
+//!     let mut host = AudioHost::new()?;
+//!     host.start(Config::default(), |_input, _output| {})?;
+//!
+//!     loop {
+//!         std::thread::sleep(std::time::Duration::from_millis(100));
+//!         let status = host.status();
+//!         if !status.running {
+//!             eprintln!("stream stopped: {:?}", status.error);
+//!             break;
+//!         }
+//!     }
+//!     Ok(())
+//! }
+//! ```
+
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 mod compile_error;
 
@@ -233,6 +264,81 @@ impl Config {
     }
 }
 
+/// Why a stream stopped on its own.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum StreamError {
+    /// The device was disconnected or is no longer available.
+    #[error("Audio device lost")]
+    DeviceLost,
+    /// The backend stopped the stream, with its description of why.
+    #[error("Stream stopped by the backend: {0}")]
+    Backend(String),
+}
+
+/// The state of the stream, see [`AudioBackend::status`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamStatus {
+    /// The stream was started and hasn't been stopped by [`AudioBackend::stop`] or an error.
+    pub running: bool,
+    /// Why the stream stopped on its own, if it did. Cleared by the next `start`.
+    pub error: Option<StreamError>,
+    /// Dropouts since `start`: callbacks where audio was lost or replaced by silence
+    /// because the system couldn't keep up. Always `0` on JUCE, which doesn't report them.
+    pub xruns: u64,
+}
+
+/// Collects the stream status from the backend's audio and error callbacks.
+/// Counting xruns is real-time safe; errors take a lock, but they are rare.
+#[derive(Debug, Default)]
+pub(crate) struct StatusTracker {
+    running: AtomicBool,
+    xruns: AtomicU64,
+    error: Mutex<Option<StreamError>>,
+}
+
+#[allow(dead_code)] // not every backend reports everything (e.g. JUCE has no xruns)
+impl StatusTracker {
+    /// Clears errors and xruns before a new stream starts.
+    pub(crate) fn reset(&self) {
+        self.running.store(false, Ordering::Relaxed);
+        self.xruns.store(0, Ordering::Relaxed);
+        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub(crate) fn set_running(&self, running: bool) {
+        self.running.store(running, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    /// Real-time safe.
+    pub(crate) fn add_xrun(&self) {
+        self.xruns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Marks a running stream as stopped by `error`. The first error is kept.
+    pub(crate) fn fail(&self, error: StreamError) {
+        if !self.running.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
+        if current.is_none() {
+            *current = Some(error);
+        }
+    }
+
+    pub(crate) fn status(&self) -> StreamStatus {
+        StreamStatus {
+            running: self.is_running(),
+            error: self.error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            xruns: self.xruns.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Trait defining the common interface for audio devices
 pub trait AudioBackend {
     /// Create a new audio device with default settings
@@ -279,6 +385,11 @@ pub trait AudioBackend {
 
     /// Stop the audio stream
     fn stop(&mut self) -> Result<(), Error>;
+
+    /// The state of the stream: whether it is still running, why it stopped on its own (e.g.
+    /// the device was unplugged) and how many dropouts happened. Poll this from your own
+    /// thread, e.g. once per UI frame. Streams aren't restarted automatically.
+    fn status(&self) -> StreamStatus;
 }
 
 // Tests that need audio hardware are in `tests/hardware.rs`.
@@ -350,6 +461,38 @@ mod tests {
         let items = [None, Some("Speakers")];
         let found = find_by_name(items, |n| n.map(str::to_string), "Speakers");
         assert_eq!(found, Some(Some("Speakers")));
+    }
+
+    #[test]
+    fn status_tracks_running_errors_and_xruns() {
+        let status = StatusTracker::default();
+        assert_eq!(status.status(), StreamStatus::default());
+
+        status.set_running(true);
+        status.add_xrun();
+        status.add_xrun();
+        status.fail(StreamError::DeviceLost);
+        // the first error is kept
+        status.fail(StreamError::Backend("later".into()));
+        assert_eq!(
+            status.status(),
+            StreamStatus {
+                running: false,
+                error: Some(StreamError::DeviceLost),
+                xruns: 2,
+            }
+        );
+
+        status.reset();
+        assert_eq!(status.status(), StreamStatus::default());
+    }
+
+    #[test]
+    fn status_ignores_errors_when_not_running() {
+        // e.g. errors while a stream is being stopped
+        let status = StatusTracker::default();
+        status.fail(StreamError::DeviceLost);
+        assert_eq!(status.status().error, None);
     }
 
     #[test]

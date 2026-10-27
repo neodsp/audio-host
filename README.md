@@ -117,4 +117,30 @@ rate. Otherwise it returns `Error::UnsupportedInputChannels`,
 device supports, so you can retry with a supported config. `num_frames` is only a request:
 the process callback can receive blocks of a different size.
 
+### Monitoring the stream
+
+Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
+is still running, why it stopped on its own (e.g. the device was unplugged) and how many
+dropouts (xruns) happened. Streams aren't restarted automatically: call `start` again or
+pick another device.
+
+```rust
+use audio_host::{AudioBackend, AudioHost, Config, Error};
+
+fn main() -> Result<(), Error> {
+    let mut host = AudioHost::new()?;
+    host.start(Config::default(), |_input, _output| {})?;
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let status = host.status();
+        if !status.running {
+            eprintln!("stream stopped: {:?}", status.error);
+            break;
+        }
+    }
+    Ok(())
+}
+```
+
 <!-- cargo-rdme end -->

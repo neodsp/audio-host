@@ -1,14 +1,21 @@
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    sync::{Arc, Mutex, Once, Weak},
+};
 
-use rtaudio::{DeviceParams, Host, StreamConfig, StreamFlags, StreamHandle};
+use rtaudio::{DeviceParams, Host, RtAudioErrorType, StreamConfig, StreamFlags, StreamHandle};
 
-use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, find_by_name};
+use crate::{
+    AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, StatusTracker, StreamError,
+    StreamStatus, find_by_name,
+};
 
 pub struct AudioHost {
     api: rtaudio::Api,
     input_device: Option<rtaudio::DeviceInfo>,
     output_device: Option<rtaudio::DeviceInfo>,
     stream_handle: Option<StreamHandle>,
+    status: Arc<StatusTracker>,
 }
 
 impl Debug for AudioHost {
@@ -39,6 +46,7 @@ impl AudioBackend for AudioHost {
             input_device,
             output_device,
             stream_handle: None,
+            status: register_status(),
         })
     }
 
@@ -141,6 +149,7 @@ impl AudioBackend for AudioHost {
     ) -> Result<(), Error> {
         self.stop()?;
         config.validate()?;
+        self.status.reset();
 
         // check the request up front, so a running stream always matches the config
         let input_device = if config.num_input_channels > 0 {
@@ -245,6 +254,8 @@ impl AudioBackend for AudioHost {
             });
         }
 
+        let status = self.status.clone();
+        self.status.set_running(true);
         self.stream_handle = Some(stream_handle);
         self.stream_handle
             .as_mut()
@@ -252,7 +263,11 @@ impl AudioBackend for AudioHost {
                 handle.start(
                     move |buffers: rtaudio::Buffers<'_>,
                           info: &rtaudio::StreamInfo,
-                          _status: rtaudio::StreamStatus| {
+                          stream_status: rtaudio::StreamStatus| {
+                        // input overflow or output underflow since the last callback
+                        if !stream_status.is_empty() {
+                            status.add_xrun();
+                        }
                         if let rtaudio::Buffers::Float32 { output, input } = buffers {
                             let input = Block::from_slice(input, info.in_channels.max(1) as u16);
                             let output =
@@ -263,17 +278,57 @@ impl AudioBackend for AudioHost {
                 )
             })
             .transpose()
-            .map_err(|e| Error::Backend(Box::new(e)))?;
+            .map_err(|e| {
+                self.status.set_running(false);
+                Error::Backend(Box::new(e))
+            })?;
 
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        // not running first, so errors while closing aren't reported
+        self.status.set_running(false);
         if let Some(mut stream_handle) = self.stream_handle.take() {
             stream_handle.stop();
         }
         Ok(())
     }
+
+    fn status(&self) -> StreamStatus {
+        self.status.status()
+    }
+}
+
+/// Status trackers of all rtaudio hosts. rtaudio has a single error callback per process
+/// and doesn't say which stream failed, so errors are reported to every running host.
+static STATUS_TRACKERS: Mutex<Vec<Weak<StatusTracker>>> = Mutex::new(Vec::new());
+
+/// Creates a status tracker that receives rtaudio's stream errors.
+fn register_status() -> Arc<StatusTracker> {
+    static ERROR_CALLBACK: Once = Once::new();
+    ERROR_CALLBACK.call_once(|| {
+        rtaudio::set_error_callback(|error| {
+            let stream_error = match error.type_ {
+                RtAudioErrorType::Warning => return,
+                RtAudioErrorType::DeviceDisconnect => StreamError::DeviceLost,
+                _ => StreamError::Backend(error.to_string()),
+            };
+            let mut trackers = STATUS_TRACKERS.lock().unwrap_or_else(|e| e.into_inner());
+            trackers.retain(|tracker| tracker.strong_count() > 0);
+            for tracker in trackers.iter().filter_map(Weak::upgrade) {
+                // only affects running streams
+                tracker.fail(stream_error.clone());
+            }
+        });
+    });
+
+    let status = Arc::new(StatusTracker::default());
+    STATUS_TRACKERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Arc::downgrade(&status));
+    status
 }
 
 fn to_u16(value: u32) -> u16 {
