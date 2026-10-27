@@ -103,7 +103,10 @@ impl AudioBackend for AudioHost {
                 devices
                     .filter_map(|device| {
                         let name = device_name(&device)?;
-                        let num_channels = device.default_input_config().ok()?.channels();
+                        let num_channels = device
+                            .supported_input_configs()
+                            .ok()
+                            .and_then(|configs| configs.map(|c| c.channels()).max());
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()
@@ -119,7 +122,10 @@ impl AudioBackend for AudioHost {
                 devices
                     .filter_map(|device| {
                         let name = device_name(&device)?;
-                        let num_channels = device.default_output_config().ok()?.channels();
+                        let num_channels = device
+                            .supported_output_configs()
+                            .ok()
+                            .and_then(|configs| configs.map(|c| c.channels()).max());
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()

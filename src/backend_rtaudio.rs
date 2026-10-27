@@ -72,7 +72,7 @@ impl AudioBackend for AudioHost {
         host.iter_input_devices()
             .map(|i| DeviceInfo {
                 name: i.name().to_string(),
-                num_channels: to_u16(i.input_channels),
+                num_channels: Some(to_u16(i.input_channels)),
             })
             .collect()
     }
@@ -84,7 +84,7 @@ impl AudioBackend for AudioHost {
         host.iter_output_devices()
             .map(|i| DeviceInfo {
                 name: i.name().to_string(),
-                num_channels: to_u16(i.output_channels),
+                num_channels: Some(to_u16(i.output_channels)),
             })
             .collect()
     }

@@ -80,7 +80,8 @@ impl AudioBackend for AudioHost {
             .into_iter()
             .map(|name| DeviceInfo {
                 name,
-                num_channels: 0,
+                // cxx-juce can't report channel counts without opening the device
+                num_channels: None,
             })
             .collect()
     }
@@ -94,7 +95,8 @@ impl AudioBackend for AudioHost {
             .into_iter()
             .map(|name| DeviceInfo {
                 name,
-                num_channels: 0,
+                // cxx-juce can't report channel counts without opening the device
+                num_channels: None,
             })
             .collect()
     }

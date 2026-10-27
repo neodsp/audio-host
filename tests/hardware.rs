@@ -152,6 +152,12 @@ fn too_many_output_channels_reports_a_working_count() {
     };
     assert!(supported > 0 && supported < 1000);
 
+    // the device list reports the same maximum (if the backend knows it)
+    let listed = host.outputs().into_iter().find(|d| d.name == host.output());
+    if let Some(num_channels) = listed.and_then(|d| d.num_channels) {
+        assert_eq!(num_channels, supported);
+    }
+
     // retrying with the reported count works
     let run = run(
         &mut host,
@@ -188,6 +194,12 @@ fn too_many_input_channels_reports_a_working_count() {
         other => panic!("expected UnsupportedInputChannels, got {other:?}"),
     };
     assert!(supported > 0 && supported < 1000);
+
+    // the device list reports the same maximum (if the backend knows it)
+    let listed = host.inputs().into_iter().find(|d| d.name == host.input());
+    if let Some(num_channels) = listed.and_then(|d| d.num_channels) {
+        assert_eq!(num_channels, supported);
+    }
 
     let run = run(
         &mut host,

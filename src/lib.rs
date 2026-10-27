@@ -173,7 +173,9 @@ pub use audio_blocks::*;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceInfo {
     pub name: String,
-    pub num_channels: u16,
+    /// The most channels the device can open, in the direction it was listed for
+    /// (input or output). `None` if the backend can't tell without opening the device (JUCE).
+    pub num_channels: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
