@@ -68,6 +68,8 @@ jobs:
           key: ${{ env.FEATURES }}
       - run: cargo clippy --locked --all-targets --no-default-features --features "$FEATURES" -- -D warnings
       - run: cargo build --locked --all-targets --no-default-features --features "$FEATURES"
+      # hardware tests are #[ignore]d, run them locally with `cargo test -- --ignored`
+      - run: cargo test --locked --no-default-features --features "$FEATURES"
       - if: runner.os == 'Linux'
         run: cargo doc --locked --no-deps --document-private-items --no-default-features --features "$FEATURES"
         env:

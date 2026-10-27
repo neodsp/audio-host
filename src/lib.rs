@@ -40,7 +40,7 @@
 //!
 //! ### Listing devices
 //!
-//! ```rust
+//! ```rust,no_run
 //! use audio_host::{AudioHost, Error, AudioBackend};
 //!
 //! fn main() -> Result<(), Error> {
@@ -80,7 +80,7 @@
 //!
 //! ### Starting a stream
 //!
-//! ```rust
+//! ```rust,no_run
 //! use audio_host::{AudioBlockOpsMut, AudioHost, Error, AudioBackend, Config};
 //!
 //! fn main() -> Result<(), Error> {
@@ -110,8 +110,8 @@
 //! Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
 //!
 //! If `start` succeeds, the stream runs with exactly the requested channel counts and sample
-//! rate. Otherwise it returns [`Error::UnsupportedInputChannels`],
-//! [`Error::UnsupportedOutputChannels`] or [`Error::UnsupportedSampleRate`] with what the
+//! rate. Otherwise it returns `Error::UnsupportedInputChannels`,
+//! `Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
 //! device supports, so you can retry with a supported config. `num_frames` is only a request:
 //! the process callback can receive blocks of a different size.
 
@@ -261,44 +261,75 @@ pub trait AudioBackend {
     fn stop(&mut self) -> Result<(), Error>;
 }
 
+// Tests that need audio hardware are in `tests/hardware.rs`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_audio_device() {
-        let mut host = AudioHost::new().unwrap();
-        dbg!(host.apis());
-        dbg!(host.inputs());
-        dbg!(host.outputs());
+    fn default_config_is_valid_output_only() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.num_input_channels, 0);
+        assert_eq!(config.num_output_channels, 2);
+    }
 
-        dbg!(host.api());
-        dbg!(host.input());
-        dbg!(host.output());
+    #[test]
+    fn input_only_and_output_only_configs_are_valid() {
+        let input_only = Config {
+            num_input_channels: 1,
+            num_output_channels: 0,
+            ..Config::default()
+        };
+        let output_only = Config {
+            num_input_channels: 0,
+            num_output_channels: 1,
+            ..Config::default()
+        };
+        assert!(input_only.validate().is_ok());
+        assert!(output_only.validate().is_ok());
+    }
 
-        host.set_api(&host.api()).unwrap();
-        host.set_input(&host.input()).unwrap();
-        host.set_output(&host.output()).unwrap();
-
-        let num_frames = 1024;
-
-        host.start(
+    #[test]
+    fn validate_rejects_invalid_configs() {
+        let invalid = [
             Config {
-                num_input_channels: 2,
-                num_output_channels: 2,
-                sample_rate: 48000,
-                num_frames,
+                num_input_channels: 0,
+                num_output_channels: 0,
+                ..Config::default()
             },
-            move |input, mut output| {
-                if output.copy_from_block(&input).is_some() {
-                    eprintln!("Input and Output buffer did not have a similar size");
-                }
+            Config {
+                sample_rate: 0,
+                ..Config::default()
             },
-        )
-        .unwrap();
+            Config {
+                num_frames: 0,
+                ..Config::default()
+            },
+        ];
+        for config in invalid {
+            assert!(
+                matches!(config.validate(), Err(Error::InvalidConfig(_))),
+                "{config:?} should be invalid"
+            );
+        }
+    }
 
-        std::thread::sleep(std::time::Duration::from_secs(3));
+    #[test]
+    fn channel_error_messages() {
+        let error = Error::UnsupportedInputChannels {
+            requested: 3,
+            supported: 2,
+        };
+        assert_eq!(
+            error.to_string(),
+            "Input device can open 2 channels, but 3 were requested"
+        );
 
-        host.stop().unwrap();
+        let error = Error::UnsupportedOutputChannels {
+            requested: 2,
+            supported: 0,
+        };
+        assert_eq!(error.to_string(), "No output device available");
     }
 }

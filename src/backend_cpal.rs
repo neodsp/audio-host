@@ -380,3 +380,61 @@ fn check_channels(
         .or_else(|| counts.iter().copied().min());
     Err(closest.unwrap_or_default())
 }
+
+#[cfg(test)]
+mod tests {
+    use cpal::{SampleFormat, SupportedBufferSize};
+
+    use super::*;
+
+    fn range(channels: u16, min_rate: u32, max_rate: u32) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(
+            channels,
+            min_rate,
+            max_rate,
+            SupportedBufferSize::Unknown,
+            SampleFormat::F32,
+        )
+    }
+
+    #[test]
+    fn exact_channel_count_passes() {
+        let ranges = [range(2, 44100, 48000), range(4, 44100, 48000)];
+        assert_eq!(check_channels(&ranges, 2, 48000), Ok(()));
+        assert_eq!(check_channels(&ranges, 4, 44100), Ok(()));
+    }
+
+    #[test]
+    fn unknown_device_configs_pass() {
+        assert_eq!(check_channels(&[], 8, 48000), Ok(()));
+    }
+
+    #[test]
+    fn suggests_largest_count_below_request() {
+        let ranges = [range(2, 48000, 48000), range(4, 48000, 48000)];
+        assert_eq!(check_channels(&ranges, 3, 48000), Err(2));
+        assert_eq!(check_channels(&ranges, 200, 48000), Err(4));
+    }
+
+    #[test]
+    fn suggests_smallest_count_if_all_are_larger() {
+        let ranges = [range(2, 48000, 48000), range(4, 48000, 48000)];
+        assert_eq!(check_channels(&ranges, 1, 48000), Err(2));
+    }
+
+    #[test]
+    fn ignores_configs_at_other_sample_rates() {
+        let ranges = [range(2, 48000, 48000), range(8, 96000, 96000)];
+        assert_eq!(check_channels(&ranges, 8, 48000), Err(2));
+        assert_eq!(check_channels(&ranges, 8, 96000), Ok(()));
+    }
+
+    #[test]
+    fn sample_rate_must_be_inside_a_range() {
+        let ranges = [range(2, 44100, 48000)];
+        assert!(supports_rate(&ranges, 44100));
+        assert!(supports_rate(&ranges, 48000));
+        assert!(!supports_rate(&ranges, 96000));
+        assert!(!supports_rate(&[], 48000));
+    }
+}

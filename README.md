@@ -111,4 +111,10 @@ fn main() -> Result<(), Error> {
 
 Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
 
+If `start` succeeds, the stream runs with exactly the requested channel counts and sample
+rate. Otherwise it returns `Error::UnsupportedInputChannels`,
+`Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
+device supports, so you can retry with a supported config. `num_frames` is only a request:
+the process callback can receive blocks of a different size.
+
 <!-- cargo-rdme end -->
