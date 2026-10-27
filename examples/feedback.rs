@@ -4,7 +4,12 @@ fn main() -> Result<(), Error> {
     let mut host = AudioHost::new()?;
 
     // start audio host
-    host.start(Config::default(), move |input, mut output| {
+    let config = Config {
+        num_input_channels: 2,
+        num_output_channels: 2,
+        ..Config::default()
+    };
+    host.start(config, move |input, mut output| {
         if output.copy_from_block(&input).is_some() {
             eprintln!("Input and Output buffer did not have a similar size");
         }

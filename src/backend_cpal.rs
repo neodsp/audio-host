@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use audio_blocks::Interleaved;
 use cpal::{
-    Stream, StreamConfig,
+    Stream, StreamConfig, SupportedStreamConfigRange,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use rtrb::RingBuffer;
@@ -152,18 +152,109 @@ impl AudioBackend for AudioHost {
         self.stop()?;
         config.validate()?;
 
-        let has_input = self.input_device.is_some() && config.num_input_channels > 0;
-        let has_output = self.output_device.is_some() && config.num_output_channels > 0;
+        let num_input_channels = config.num_input_channels;
+        let num_output_channels = config.num_output_channels;
+        let has_input = num_input_channels > 0;
+        let has_output = num_output_channels > 0;
 
-        if !has_output {
-            return Err(Error::NotFound);
+        // check the request up front, so a running stream always matches the config
+        if has_input && self.input_device.is_none() {
+            return Err(Error::UnsupportedInputChannels {
+                requested: num_input_channels,
+                supported: 0,
+            });
+        }
+        if has_output && self.output_device.is_none() {
+            return Err(Error::UnsupportedOutputChannels {
+                requested: num_output_channels,
+                supported: 0,
+            });
         }
 
+        // devices that can't list their configs are left to cpal to report
+        let input_ranges: Vec<_> = match (&self.input_device, has_input) {
+            (Some(device), true) => device
+                .supported_input_configs()
+                .map(|c| c.collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let output_ranges: Vec<_> = match (&self.output_device, has_output) {
+            (Some(device), true) => device
+                .supported_output_configs()
+                .map(|c| c.collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+
+        let rate_supported = |ranges: &[SupportedStreamConfigRange]| {
+            ranges.is_empty() || supports_rate(ranges, config.sample_rate)
+        };
+        if !rate_supported(&input_ranges) || !rate_supported(&output_ranges) {
+            return Err(Error::UnsupportedSampleRate {
+                requested: config.sample_rate,
+                available: COMMON_SAMPLE_RATES
+                    .into_iter()
+                    .filter(|&rate| {
+                        [&input_ranges, &output_ranges]
+                            .iter()
+                            .all(|r| r.is_empty() || supports_rate(r, rate))
+                    })
+                    .collect(),
+            });
+        }
+
+        check_channels(&input_ranges, num_input_channels, config.sample_rate).map_err(
+            |supported| Error::UnsupportedInputChannels {
+                requested: num_input_channels,
+                supported,
+            },
+        )?;
+        check_channels(&output_ranges, num_output_channels, config.sample_rate).map_err(
+            |supported| Error::UnsupportedOutputChannels {
+                requested: num_output_channels,
+                supported,
+            },
+        )?;
+
+        let input_stream_config = StreamConfig {
+            channels: num_input_channels,
+            sample_rate: config.sample_rate,
+            buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+        };
+
+        // input-only: run the process callback directly in the input stream
+        if !has_output {
+            let Some(input_device) = &self.input_device else {
+                unreachable!("checked above");
+            };
+            let input_stream = input_device
+                .build_input_stream(
+                    input_stream_config,
+                    move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                        let input_block = Block::from_slice(data, num_input_channels);
+                        // empty output block, like the rtaudio backend
+                        let output_block = BlockMut::from_slice(&mut [], 1);
+                        process_fn(input_block, output_block);
+                    },
+                    move |err| eprintln!("Error in input stream: {:?}", err),
+                    None,
+                )
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            input_stream
+                .play()
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            self.input_stream = Some(input_stream);
+            return Ok(());
+        }
+
+        // with an output, the process callback runs in the output stream and gets the input
+        // through a ring buffer
         let (mut producer, mut consumer) = if has_input {
             let latency_ms = 100;
             let latency_samples = (latency_ms as f64 / 1000.0 * config.sample_rate as f64) as usize
-                * config.num_input_channels as usize;
-            let input_block_size = config.num_input_channels as usize * config.num_frames;
+                * num_input_channels as usize;
+            let input_block_size = num_input_channels as usize * config.num_frames;
             let (mut producer, consumer) =
                 RingBuffer::<f32>::new(latency_samples + 10 * input_block_size);
 
@@ -176,11 +267,6 @@ impl AudioBackend for AudioHost {
         };
 
         if has_input && let Some(input_device) = &self.input_device {
-            let input_stream_config = StreamConfig {
-                channels: config.num_input_channels,
-                sample_rate: config.sample_rate,
-                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
-            };
             let input_stream = input_device
                 .build_input_stream(
                     input_stream_config,
@@ -207,13 +293,13 @@ impl AudioBackend for AudioHost {
 
         if let Some(output_device) = &self.output_device {
             let output_stream_config = StreamConfig {
-                channels: config.num_output_channels,
+                channels: num_output_channels,
                 sample_rate: config.sample_rate,
                 buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
             };
 
             let mut input_block = if has_input {
-                Interleaved::new(config.num_input_channels, config.num_frames)
+                Interleaved::new(num_input_channels, config.num_frames)
             } else {
                 Interleaved::new(1, 0)
             };
@@ -233,7 +319,7 @@ impl AudioBackend for AudioHost {
                             }
                         }
 
-                        let output_block = BlockMut::from_slice(data, config.num_output_channels);
+                        let output_block = BlockMut::from_slice(data, num_output_channels);
                         process_fn(input_block.view(), output_block);
                     },
                     move |err| eprintln!("Error in output stream: {:?}", err),
@@ -251,12 +337,46 @@ impl AudioBackend for AudioHost {
     }
 
     fn stop(&mut self) -> Result<(), Error> {
-        if let Some(stream) = self.output_stream.take() {
-            stream.pause().map_err(|e| Error::Backend(Box::new(e)))?;
-        }
-        if let Some(stream) = self.input_stream.take() {
-            stream.pause().map_err(|e| Error::Backend(Box::new(e)))?;
-        }
+        // dropping a stream stops and closes it; pausing first fails on devices that can't
+        // pause (e.g. ALSA through PipeWire)
+        self.output_stream = None;
+        self.input_stream = None;
         Ok(())
     }
+}
+
+/// cpal reports sample rate ranges, so errors list the common rates inside them.
+const COMMON_SAMPLE_RATES: [u32; 11] = [
+    8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000,
+];
+
+fn supports_rate(ranges: &[SupportedStreamConfigRange], sample_rate: u32) -> bool {
+    ranges
+        .iter()
+        .any(|r| r.min_sample_rate() <= sample_rate && sample_rate <= r.max_sample_rate())
+}
+
+/// Checks that the device supports exactly `requested` channels at `sample_rate`.
+/// On failure returns the closest supported count: the largest one below `requested`, or the
+/// smallest one if all are larger. Passes if the device reports nothing.
+fn check_channels(
+    ranges: &[SupportedStreamConfigRange],
+    requested: u16,
+    sample_rate: u32,
+) -> Result<(), u16> {
+    let counts: Vec<u16> = ranges
+        .iter()
+        .filter(|r| r.min_sample_rate() <= sample_rate && sample_rate <= r.max_sample_rate())
+        .map(|r| r.channels())
+        .collect();
+    if counts.is_empty() || counts.contains(&requested) {
+        return Ok(());
+    }
+    let closest = counts
+        .iter()
+        .copied()
+        .filter(|&c| c < requested)
+        .max()
+        .or_else(|| counts.iter().copied().min());
+    Err(closest.unwrap_or_default())
 }

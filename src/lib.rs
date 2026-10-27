@@ -26,14 +26,14 @@
 //!
 //! ```toml
 //! [dependencies]
-//! audio-host = "0.5.0"
+//! audio-host = "0.2.0"
 //! ```
 //!
 //! To use a specific backend (e.g., `cpal`), disable the default features:
 //!
 //! ```toml
 //! [dependencies]
-//! audio-host = { version = "0.5.0", default-features = false, features = ["cpal"] }
+//! audio-host = { version = "0.2.0", default-features = false, features = ["cpal"] }
 //! ```
 //!
 //! ## Usage
@@ -108,6 +108,12 @@
 //! ```
 //!
 //! Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
+//!
+//! If `start` succeeds, the stream runs with exactly the requested channel counts and sample
+//! rate. Otherwise it returns [`Error::UnsupportedInputChannels`],
+//! [`Error::UnsupportedOutputChannels`] or [`Error::UnsupportedSampleRate`] with what the
+//! device supports, so you can retry with a supported config. `num_frames` is only a request:
+//! the process callback can receive blocks of a different size.
 
 mod compile_error;
 
@@ -126,13 +132,36 @@ pub use backend_juce::AudioHost;
 pub use backend_rtaudio::AudioHost;
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     #[error("Device or API not found")]
     NotFound,
     #[error("Invalid config: {0}")]
     InvalidConfig(&'static str),
+    /// The input device cannot open the requested number of channels.
+    /// `supported` is the closest channel count it can open, so retrying with it works
+    /// (`0` if there is no input device).
+    #[error("{}", channel_message("Input", *.requested, *.supported))]
+    UnsupportedInputChannels { requested: u16, supported: u16 },
+    /// The output device cannot open the requested number of channels.
+    /// `supported` is the closest channel count it can open, so retrying with it works
+    /// (`0` if there is no output device).
+    #[error("{}", channel_message("Output", *.requested, *.supported))]
+    UnsupportedOutputChannels { requested: u16, supported: u16 },
+    /// The devices cannot run at the requested sample rate.
+    /// `available` lists the sample rates they support (may be empty if unknown).
+    #[error("Sample rate {requested} Hz is not supported, available: {available:?}")]
+    UnsupportedSampleRate { requested: u32, available: Vec<u32> },
     #[error("Backend error: {0}")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+fn channel_message(direction: &str, requested: u16, supported: u16) -> String {
+    if supported == 0 {
+        format!("No {} device available", direction.to_lowercase())
+    } else {
+        format!("{direction} device can open {supported} channels, but {requested} were requested")
+    }
 }
 
 pub type Block<'a> = InterleavedView<'a, f32>;
@@ -159,7 +188,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            num_input_channels: 2,
+            num_input_channels: 0,
             num_output_channels: 2,
             sample_rate: 48000,
             num_frames: 512,
@@ -218,7 +247,10 @@ pub trait AudioBackend {
     /// Set the output device by name
     fn set_output(&mut self, output: &str) -> Result<(), Error>;
 
-    /// Start the audio stream with the given configuration and process callback
+    /// Start the audio stream with the given configuration and process callback.
+    ///
+    /// On success the stream uses exactly the requested channel counts and sample rate.
+    /// Otherwise an `Unsupported*` error reports what the device supports.
     fn start(
         &mut self,
         config: Config,

@@ -28,14 +28,14 @@ To use the default backend (`rtaudio`):
 
 ```toml
 [dependencies]
-audio-host = "0.1.1"
+audio-host = "0.2.0"
 ```
 
 To use a specific backend (e.g., `cpal`), disable the default features:
 
 ```toml
 [dependencies]
-audio-host = { version = "0.1.1", default-features = false, features = ["cpal"] }
+audio-host = { version = "0.2.0", default-features = false, features = ["cpal"] }
 ```
 
 ## Usage
