@@ -69,17 +69,11 @@ impl AudioBackend for AudioHost {
     }
 
     fn input(&self) -> String {
-        self.device_manager
-            .audio_device_setup()
-            .input_device_name()
-            .into()
+        self.input_device.clone()
     }
 
     fn output(&self) -> String {
-        self.device_manager
-            .audio_device_setup()
-            .output_device_name()
-            .into()
+        self.output_device.clone()
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
@@ -107,10 +101,16 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        self.device_manager.set_current_audio_device_type(name);
-        // update setup
-        self.input_device = self.input();
-        self.output_device = self.output();
+        let api = self
+            .apis
+            .iter()
+            .find(|api| api.contains(name))
+            .ok_or(Error::NotFound)?;
+        self.device_manager.set_current_audio_device_type(api);
+        // switching the API resets the selection to that API's default devices
+        let setup = self.device_manager.audio_device_setup();
+        self.input_device = setup.input_device_name().into();
+        self.output_device = setup.output_device_name().into();
         Ok(())
     }
 
@@ -144,13 +144,43 @@ impl AudioBackend for AudioHost {
         self.stop()?;
         config.validate()?;
 
+        // only open the devices that are actually used
+        let input_device = if config.num_input_channels > 0 {
+            self.input_device.as_str()
+        } else {
+            ""
+        };
+        let output_device = if config.num_output_channels > 0 {
+            self.output_device.as_str()
+        } else {
+            ""
+        };
+        if input_device.is_empty() && output_device.is_empty() {
+            return Err(Error::NotFound);
+        }
+
         let mut setup = self.device_manager.audio_device_setup();
+        setup = setup.with_input_device_name(input_device);
+        setup = setup.with_output_device_name(output_device);
         setup = setup.with_input_channels(ChannelCount::Custom(config.num_input_channels as i32));
         setup = setup.with_output_channels(ChannelCount::Custom(config.num_output_channels as i32));
         setup = setup.with_sample_rate(config.sample_rate as f64);
         setup = setup.with_buffer_size(config.num_frames);
 
         self.device_manager.set_audio_device_setup(&setup);
+
+        // cxx-juce drops JUCE's error message, so check that the requested devices were opened
+        let actual = self.device_manager.audio_device_setup();
+        if config.num_input_channels > 0 && actual.input_device_name() != self.input_device {
+            return Err(Error::Backend(
+                format!("could not open input device '{}'", self.input_device).into(),
+            ));
+        }
+        if config.num_output_channels > 0 && actual.output_device_name() != self.output_device {
+            return Err(Error::Backend(
+                format!("could not open output device '{}'", self.output_device).into(),
+            ));
+        }
 
         self.handle = Some(
             self.device_manager
