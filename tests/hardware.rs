@@ -69,7 +69,8 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
 }
 
 fn has_input(host: &AudioHost) -> bool {
-    if host.input().is_empty() {
+    // JUCE only names its default device after start(), so also check the device list
+    if host.input().is_empty() && host.inputs().is_empty() {
         eprintln!("skipped: no input device");
         return false;
     }

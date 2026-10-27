@@ -14,12 +14,25 @@ use crate::{
     StreamStatus, find_by_name,
 };
 
+/// Audio host using JUCE.
+///
+/// JUCE can only report its default devices by opening them. To avoid opening devices that
+/// aren't used (and e.g. triggering the microphone permission prompt on macOS), the default
+/// devices are chosen in [`start`](AudioBackend::start), only for the directions the config
+/// uses. Until then [`input`](AudioBackend::input) and [`output`](AudioBackend::output) return
+/// an empty string if no device was selected.
 pub struct AudioHost {
     _juce: JUCE,
     apis: Vec<String>,
     device_manager: AudioDeviceManager,
-    input_device: String,
-    output_device: String,
+    /// Selected with `set_input`, `None` means JUCE's default device.
+    input_device: Option<String>,
+    /// Selected with `set_output`, `None` means JUCE's default device.
+    output_device: Option<String>,
+    /// The default input device JUCE picked in the last `start`, empty if unknown.
+    default_input: String,
+    /// The default output device JUCE picked in the last `start`, empty if unknown.
+    default_output: String,
     handle: Option<AudioCallbackHandle>,
     status: Arc<StatusTracker>,
 }
@@ -44,17 +57,21 @@ impl AudioBackend for AudioHost {
         for api in device_manager.device_types() {
             apis.push(api.name().to_string());
         }
-        let mut host = Self {
+        // picks the API without opening any device (no channels are needed yet)
+        device_manager
+            .initialise(0, 0)
+            .map_err(|e| Error::Backend(Box::new(e)))?;
+        Ok(Self {
             _juce: juce,
             apis,
             device_manager,
-            input_device: String::new(),
-            output_device: String::new(),
+            input_device: None,
+            output_device: None,
+            default_input: String::new(),
+            default_output: String::new(),
             handle: None,
             status: Arc::default(),
-        };
-        host.select_default_devices()?;
-        Ok(host)
+        })
     }
 
     fn api(&self) -> String {
@@ -69,11 +86,15 @@ impl AudioBackend for AudioHost {
     }
 
     fn input(&self) -> String {
-        self.input_device.clone()
+        self.input_device
+            .clone()
+            .unwrap_or_else(|| self.default_input.clone())
     }
 
     fn output(&self) -> String {
-        self.output_device.clone()
+        self.output_device
+            .clone()
+            .unwrap_or_else(|| self.default_output.clone())
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
@@ -123,22 +144,33 @@ impl AudioBackend for AudioHost {
         }
 
         self.stop()?;
+        // no channels needed, so switching doesn't open the new API's default devices. It still
+        // reopens the devices last used with that API, if any, so close them right away.
+        self.device_manager
+            .initialise(0, 0)
+            .map_err(|e| Error::Backend(Box::new(e)))?;
         self.device_manager.set_current_audio_device_type(&api);
+        self.close_device();
+
         // switching the API resets the selection to that API's default devices
-        self.select_default_devices()
+        self.input_device = None;
+        self.output_device = None;
+        self.default_input.clear();
+        self.default_output.clear();
+        Ok(())
     }
 
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
         let device =
             find_by_name(self.inputs(), |d| Some(d.name.clone()), input).ok_or(Error::NotFound)?;
-        self.input_device = device.name;
+        self.input_device = Some(device.name);
         Ok(())
     }
 
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
         let device = find_by_name(self.outputs(), |d| Some(d.name.clone()), output)
             .ok_or(Error::NotFound)?;
-        self.output_device = device.name;
+        self.output_device = Some(device.name);
         Ok(())
     }
 
@@ -151,13 +183,40 @@ impl AudioBackend for AudioHost {
         config.validate()?;
         self.status.reset();
 
-        if config.num_input_channels > 0 && self.input_device.is_empty() {
+        // let JUCE pick its default devices, only for the directions that are used
+        let default_input_channels = match self.input_device {
+            None => config.num_input_channels,
+            Some(_) => 0,
+        };
+        let default_output_channels = match self.output_device {
+            None => config.num_output_channels,
+            Some(_) => 0,
+        };
+        if default_input_channels > 0 || default_output_channels > 0 {
+            self.device_manager
+                .initialise(
+                    default_input_channels as usize,
+                    default_output_channels as usize,
+                )
+                .map_err(|e| Error::Backend(Box::new(e)))?;
+            let setup = self.device_manager.audio_device_setup();
+            if default_input_channels > 0 {
+                self.default_input = setup.input_device_name().into();
+            }
+            if default_output_channels > 0 {
+                self.default_output = setup.output_device_name().into();
+            }
+        }
+
+        if config.num_input_channels > 0 && self.input().is_empty() {
+            self.close_device();
             return Err(Error::UnsupportedInputChannels {
                 requested: config.num_input_channels,
                 supported: 0,
             });
         }
-        if config.num_output_channels > 0 && self.output_device.is_empty() {
+        if config.num_output_channels > 0 && self.output().is_empty() {
+            self.close_device();
             return Err(Error::UnsupportedOutputChannels {
                 requested: config.num_output_channels,
                 supported: 0,
@@ -166,12 +225,12 @@ impl AudioBackend for AudioHost {
 
         // only open the devices that are actually used
         let input_device = if config.num_input_channels > 0 {
-            self.input_device.clone()
+            self.input()
         } else {
             String::new()
         };
         let output_device = if config.num_output_channels > 0 {
-            self.output_device.clone()
+            self.output()
         } else {
             String::new()
         };
@@ -266,19 +325,6 @@ impl AudioBackend for AudioHost {
 }
 
 impl AudioHost {
-    /// Selects the default devices of the current API. JUCE only reports them by opening
-    /// them, so they are opened briefly and closed again.
-    fn select_default_devices(&mut self) -> Result<(), Error> {
-        self.device_manager
-            .initialise(256, 256)
-            .map_err(|e| Error::Backend(Box::new(e)))?;
-        let setup = self.device_manager.audio_device_setup();
-        self.input_device = setup.input_device_name().into();
-        self.output_device = setup.output_device_name().into();
-        self.close_device();
-        Ok(())
-    }
-
     /// Closes the current device. JUCE does this when no device names are set.
     fn close_device(&mut self) {
         let setup = self

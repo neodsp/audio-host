@@ -352,10 +352,16 @@ pub trait AudioBackend {
     /// Get all available APIs/hosts
     fn apis(&self) -> Vec<String>;
 
-    /// Get the current input device name
+    /// Get the current input device name, empty if there is none.
+    ///
+    /// JUCE only knows its default device after `start`, so this is empty until then if no
+    /// device was selected with `set_input`.
     fn input(&self) -> String;
 
-    /// Get the current output device name
+    /// Get the current output device name, empty if there is none.
+    ///
+    /// JUCE only knows its default device after `start`, so this is empty until then if no
+    /// device was selected with `set_output`.
     fn output(&self) -> String;
 
     /// Get all available input devices
