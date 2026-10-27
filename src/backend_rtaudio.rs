@@ -66,23 +66,25 @@ impl AudioBackend for AudioHost {
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
-        Host::new(self.api)
-            .unwrap()
-            .iter_input_devices()
+        let Ok(host) = Host::new(self.api) else {
+            return Vec::new();
+        };
+        host.iter_input_devices()
             .map(|i| DeviceInfo {
                 name: i.name().to_string(),
-                num_channels: i.input_channels as u16,
+                num_channels: to_u16(i.input_channels),
             })
             .collect()
     }
 
     fn outputs(&self) -> Vec<DeviceInfo> {
-        Host::new(self.api)
-            .unwrap()
-            .iter_output_devices()
+        let Ok(host) = Host::new(self.api) else {
+            return Vec::new();
+        };
+        host.iter_output_devices()
             .map(|i| DeviceInfo {
                 name: i.name().to_string(),
-                num_channels: i.output_channels as u16,
+                num_channels: to_u16(i.output_channels),
             })
             .collect()
     }

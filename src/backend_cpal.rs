@@ -84,14 +84,14 @@ impl AudioBackend for AudioHost {
     fn input(&self) -> String {
         self.input_device
             .as_ref()
-            .map(|d| d.description().unwrap().name().to_string())
+            .and_then(device_name)
             .unwrap_or_default()
     }
 
     fn output(&self) -> String {
         self.output_device
             .as_ref()
-            .map(|d| d.description().unwrap().name().to_string())
+            .and_then(device_name)
             .unwrap_or_default()
     }
 
@@ -102,7 +102,7 @@ impl AudioBackend for AudioHost {
             .map(|devices| {
                 devices
                     .filter_map(|device| {
-                        let name = device.description().unwrap().name().to_string();
+                        let name = device_name(&device)?;
                         let num_channels = device.default_input_config().ok()?.channels();
                         Some(DeviceInfo { name, num_channels })
                     })
@@ -118,7 +118,7 @@ impl AudioBackend for AudioHost {
             .map(|devices| {
                 devices
                     .filter_map(|device| {
-                        let name = device.description().unwrap().name().to_string();
+                        let name = device_name(&device)?;
                         let num_channels = device.default_output_config().ok()?.channels();
                         Some(DeviceInfo { name, num_channels })
                     })
@@ -147,7 +147,7 @@ impl AudioBackend for AudioHost {
             .host
             .input_devices()
             .map_err(|e| Error::Backend(Box::new(e)))?
-            .find(|device| device.description().unwrap().name().contains(input))
+            .find(|device| device_name(device).is_some_and(|name| name.contains(input)))
             .ok_or(Error::NotFound)?;
 
         self.input_device = Some(device);
@@ -159,7 +159,7 @@ impl AudioBackend for AudioHost {
             .host
             .output_devices()
             .map_err(|e| Error::Backend(Box::new(e)))?
-            .find(|device| device.description().unwrap().name().contains(output))
+            .find(|device| device_name(device).is_some_and(|name| name.contains(output)))
             .ok_or(Error::NotFound)?;
 
         self.output_device = Some(device);
@@ -391,6 +391,11 @@ impl AudioBackend for AudioHost {
         }
         Ok(())
     }
+}
+
+/// The device name, `None` if cpal can't read it (e.g. the device was just unplugged).
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
 }
 
 /// cpal reports sample rate ranges, so errors list the common rates inside them.

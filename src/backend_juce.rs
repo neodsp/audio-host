@@ -53,8 +53,10 @@ impl AudioBackend for AudioHost {
     }
 
     fn api(&self) -> String {
-        let device_type = self.device_manager.current_device_type().unwrap();
-        device_type.name()
+        self.device_manager
+            .current_device_type()
+            .map(|t| t.name())
+            .unwrap_or_default()
     }
 
     fn apis(&self) -> Vec<String> {
@@ -70,24 +72,28 @@ impl AudioBackend for AudioHost {
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
-        let device_type = self.device_manager.current_device_type().unwrap();
+        let Some(device_type) = self.device_manager.current_device_type() else {
+            return Vec::new();
+        };
         device_type
             .input_devices()
-            .iter()
-            .map(|d: &String| DeviceInfo {
-                name: d.clone(),
+            .into_iter()
+            .map(|name| DeviceInfo {
+                name,
                 num_channels: 0,
             })
             .collect()
     }
 
     fn outputs(&self) -> Vec<DeviceInfo> {
-        let device_type = self.device_manager.current_device_type().unwrap();
+        let Some(device_type) = self.device_manager.current_device_type() else {
+            return Vec::new();
+        };
         device_type
             .output_devices()
-            .iter()
-            .map(|d: &String| DeviceInfo {
-                name: d.clone(),
+            .into_iter()
+            .map(|name| DeviceInfo {
+                name,
                 num_channels: 0,
             })
             .collect()
