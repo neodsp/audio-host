@@ -30,6 +30,8 @@ struct Run {
     callbacks: usize,
     input_channels: usize,
     output_channels: usize,
+    /// Duplex callbacks where input and output blocks had a different number of frames.
+    mismatched_blocks: usize,
 }
 
 /// Runs a silent stream for half a second.
@@ -37,17 +39,23 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
     let callbacks = Arc::new(AtomicUsize::new(0));
     let input_channels = Arc::new(AtomicUsize::new(0));
     let output_channels = Arc::new(AtomicUsize::new(0));
-    let (c, i, o) = (
+    let mismatched_blocks = Arc::new(AtomicUsize::new(0));
+    let (c, i, o, m) = (
         callbacks.clone(),
         input_channels.clone(),
         output_channels.clone(),
+        mismatched_blocks.clone(),
     );
+    let duplex = config.num_input_channels > 0 && config.num_output_channels > 0;
 
     host.start(config, move |input, mut output| {
         output.clear();
         c.fetch_add(1, Ordering::Relaxed);
         i.store(input.num_channels() as usize, Ordering::Relaxed);
         o.store(output.num_channels() as usize, Ordering::Relaxed);
+        if duplex && input.num_frames() != output.num_frames() {
+            m.fetch_add(1, Ordering::Relaxed);
+        }
     })?;
     std::thread::sleep(Duration::from_millis(500));
     host.stop().expect("stop failed");
@@ -56,6 +64,7 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
         callbacks: callbacks.load(Ordering::Relaxed),
         input_channels: input_channels.load(Ordering::Relaxed),
         output_channels: output_channels.load(Ordering::Relaxed),
+        mismatched_blocks: mismatched_blocks.load(Ordering::Relaxed),
     })
 }
 
@@ -115,6 +124,10 @@ fn duplex_stream_runs() {
     assert!(run.callbacks > 0, "process callback was never called");
     assert_eq!(run.input_channels, 1);
     assert_eq!(run.output_channels, 2);
+    assert_eq!(
+        run.mismatched_blocks, 0,
+        "input and output blocks differ in length"
+    );
 }
 
 #[test]

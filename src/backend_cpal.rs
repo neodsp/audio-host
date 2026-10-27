@@ -1,6 +1,12 @@
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use audio_blocks::Interleaved;
+use audio_blocks::{AudioBlockMut, Interleaved};
 use cpal::{
     Stream, StreamConfig, SupportedStreamConfigRange,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -9,6 +15,13 @@ use rtrb::RingBuffer;
 
 use crate::{AudioBackend, Block, BlockMut, Config, DeviceInfo, Error};
 
+/// Input latency added to duplex streams. cpal runs input and output as two streams, so the
+/// input goes through a ring buffer that absorbs timing differences between them.
+const DUPLEX_LATENCY_MS: u32 = 100;
+
+/// Audio host using cpal.
+///
+/// Duplex streams (input and output) add [`DUPLEX_LATENCY_MS`] of input latency.
 pub struct AudioHost {
     host: cpal::Host,
     host_id: cpal::HostId,
@@ -16,13 +29,20 @@ pub struct AudioHost {
     output_device: Option<cpal::Device>,
     output_stream: Option<Stream>,
     input_stream: Option<Stream>,
+    /// Duplex only: input samples dropped because the ring buffer was full.
+    dropped_input_samples: Arc<AtomicUsize>,
+    /// Duplex only: input samples replaced by silence because the ring buffer was empty.
+    missing_input_samples: Arc<AtomicUsize>,
 }
 
 impl Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioHost")
             .field("backend", &"CPAL")
-            .field("is_running", &self.output_stream.is_some())
+            .field(
+                "is_running",
+                &(self.output_stream.is_some() || self.input_stream.is_some()),
+            )
             .field("apis", &self.apis())
             .field("inputs", &self.inputs())
             .field("outputs", &self.outputs())
@@ -45,6 +65,8 @@ impl AudioBackend for AudioHost {
             output_device,
             output_stream: None,
             input_stream: None,
+            dropped_input_samples: Arc::default(),
+            missing_input_samples: Arc::default(),
         })
     }
 
@@ -251,8 +273,7 @@ impl AudioBackend for AudioHost {
         // with an output, the process callback runs in the output stream and gets the input
         // through a ring buffer
         let (mut producer, mut consumer) = if has_input {
-            let latency_ms = 100;
-            let latency_samples = (latency_ms as f64 / 1000.0 * config.sample_rate as f64) as usize
+            let latency_samples = (DUPLEX_LATENCY_MS as usize * config.sample_rate as usize / 1000)
                 * num_input_channels as usize;
             let input_block_size = num_input_channels as usize * config.num_frames;
             let (mut producer, consumer) =
@@ -266,18 +287,22 @@ impl AudioBackend for AudioHost {
             (None, None)
         };
 
+        // the audio threads only count problems, printing there could block them
+        self.dropped_input_samples.store(0, Ordering::Relaxed);
+        self.missing_input_samples.store(0, Ordering::Relaxed);
+        let dropped_input_samples = self.dropped_input_samples.clone();
+        let missing_input_samples = self.missing_input_samples.clone();
+
         if has_input && let Some(input_device) = &self.input_device {
             let input_stream = input_device
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
                         if let Some(ref mut producer) = producer {
-                            for sample in data {
-                                if producer.push(*sample).is_err() {
-                                    eprintln!(
-                                        "AudioHost: Could not push complete input into producer..."
-                                    );
-                                }
+                            let dropped =
+                                data.iter().filter(|&&s| producer.push(s).is_err()).count();
+                            if dropped > 0 {
+                                dropped_input_samples.fetch_add(dropped, Ordering::Relaxed);
                             }
                         }
                     },
@@ -303,24 +328,37 @@ impl AudioBackend for AudioHost {
             } else {
                 Interleaved::new(1, 0)
             };
+            let max_chunk_samples = config.num_frames * num_output_channels as usize;
 
             let output_stream = output_device
                 .build_output_stream(
                     output_stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                        if let Some(ref mut consumer) = consumer {
-                            for frame in input_block.frames_mut() {
-                                for sample in frame {
-                                    *sample = consumer.pop().unwrap_or_else(|_| {
-                                        eprintln!("AudioHost: Could not pop sample from consumer");
-                                        0.0
-                                    });
+                        // the driver may deliver more or fewer frames than requested. Larger
+                        // callbacks are split, so input and output blocks always have the same
+                        // length and never exceed `num_frames` (no allocation needed)
+                        for chunk in data.chunks_mut(max_chunk_samples) {
+                            if let Some(ref mut consumer) = consumer {
+                                input_block.set_num_frames_visible(
+                                    chunk.len() / num_output_channels as usize,
+                                );
+                                let mut missing = 0;
+                                for frame in input_block.frames_mut() {
+                                    for sample in frame {
+                                        *sample = consumer.pop().unwrap_or_else(|_| {
+                                            missing += 1;
+                                            0.0
+                                        });
+                                    }
+                                }
+                                if missing > 0 {
+                                    missing_input_samples.fetch_add(missing, Ordering::Relaxed);
                                 }
                             }
-                        }
 
-                        let output_block = BlockMut::from_slice(data, num_output_channels);
-                        process_fn(input_block.view(), output_block);
+                            let output_block = BlockMut::from_slice(chunk, num_output_channels);
+                            process_fn(input_block.view(), output_block);
+                        }
                     },
                     move |err| eprintln!("Error in output stream: {:?}", err),
                     None,
@@ -341,6 +379,16 @@ impl AudioBackend for AudioHost {
         // pause (e.g. ALSA through PipeWire)
         self.output_stream = None;
         self.input_stream = None;
+
+        // report duplex problems once, outside the audio threads
+        let dropped = self.dropped_input_samples.swap(0, Ordering::Relaxed);
+        let missing = self.missing_input_samples.swap(0, Ordering::Relaxed);
+        if dropped > 0 || missing > 0 {
+            eprintln!(
+                "AudioHost: input and output streams drifted apart: \
+                 {dropped} input samples dropped, {missing} replaced by silence"
+            );
+        }
         Ok(())
     }
 }
