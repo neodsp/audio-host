@@ -262,7 +262,7 @@ impl AudioBackend for AudioHost {
         if info.sample_rate != config.sample_rate {
             return Err(Error::UnsupportedSampleRate {
                 requested: config.sample_rate,
-                available: available_rates.unwrap_or_else(|| vec![info.sample_rate]),
+                available: rates_without(available_rates, config.sample_rate, info.sample_rate),
             });
         }
 
@@ -343,6 +343,21 @@ fn register_status() -> Arc<StatusTracker> {
     status
 }
 
+/// The rates to suggest after the device opened at `opened` instead of `rejected`.
+/// `rejected` was listed but didn't work, so it's removed; the opened rate always works.
+fn rates_without(listed: Option<Vec<u32>>, rejected: u32, opened: u32) -> Vec<u32> {
+    let mut rates: Vec<u32> = listed
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&rate| rate != rejected)
+        .collect();
+    if !rates.contains(&opened) {
+        rates.push(opened);
+        rates.sort_unstable();
+    }
+    rates
+}
+
 fn to_u16(value: u32) -> u16 {
     value.min(u16::MAX as u32) as u16
 }
@@ -350,6 +365,17 @@ fn to_u16(value: u32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggested_rates_drop_the_rejected_rate() {
+        assert_eq!(
+            rates_without(Some(vec![44100, 48000, 96000]), 96000, 48000),
+            vec![44100, 48000]
+        );
+        // the opened rate is always suggested
+        assert_eq!(rates_without(Some(vec![96000]), 96000, 48000), vec![48000]);
+        assert_eq!(rates_without(None, 96000, 48000), vec![48000]);
+    }
 
     #[test]
     fn dropped_status_trackers_are_removed() {
