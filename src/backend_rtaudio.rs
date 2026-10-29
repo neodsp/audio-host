@@ -13,6 +13,11 @@ use crate::{
     StreamStatus, find_by_name,
 };
 
+/// Audio host using rtaudio.
+///
+/// Stream errors come from rtaudio's error callback, which is shared by the whole process. Don't
+/// replace it with `rtaudio::set_error_callback`, or `status()` stops reporting errors. rtaudio
+/// doesn't say which stream failed, so an error stops the status of every running host.
 pub struct AudioHost {
     api: rtaudio::Api,
     input_device: Option<rtaudio::DeviceInfo>,
