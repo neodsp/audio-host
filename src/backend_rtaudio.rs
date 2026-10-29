@@ -98,14 +98,19 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
-        self.api = find_by_name(
+        let api = find_by_name(
             rtaudio::compiled_apis().iter().copied(),
             |api| Some(api.get_display_name()),
             name,
         )
         .ok_or(Error::NotFound)?;
 
-        let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
+        // nothing changes unless the new API can be opened
+        let host = Host::new(api).map_err(|e| Error::Backend(Box::new(e)))?;
+
+        // a running stream belongs to the old API, so stop it (like the JUCE backend)
+        self.stop()?;
+        self.api = api;
         self.input_device = host
             .iter_input_devices()
             .find(|d| d.is_default_input)
