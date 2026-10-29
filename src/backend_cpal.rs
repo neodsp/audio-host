@@ -476,6 +476,9 @@ fn error_handler(
     let status = status.clone();
     let watchdog = watchdog.clone();
     move |error| match error.kind() {
+        // already stopped: don't format the message, which allocates on the audio thread on
+        // some hosts (e.g. ALSA reporting the same error on every loop)
+        _ if !status.is_running() => {}
         cpal::ErrorKind::Xrun => status.add_xrun(),
         // the stream keeps running in these cases (RealtimeDenied: audio plays without
         // real-time priority)
@@ -489,11 +492,7 @@ fn error_handler(
         }
         // whether the stream survives these depends on the host (ALSA keeps it running after
         // a `BackendError`, WASAPI and PulseAudio don't), so they only count if it stops
-        _ => {
-            if status.is_running() {
-                watchdog.error(StreamError::Backend(error.to_string()), Instant::now());
-            }
-        }
+        _ => watchdog.error(StreamError::Backend(error.to_string()), Instant::now()),
     }
 }
 
@@ -1043,6 +1042,22 @@ mod tests {
             assert!(status.running, "{kind:?}");
             assert_eq!(status.error, None, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn error_handler_ignores_errors_after_the_stream_stopped() {
+        let status = Arc::new(StatusTracker::default());
+        let watchdog = Arc::new(Watchdog::new());
+        let mut handler = error_handler(&status, &watchdog);
+        for kind in [
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::BackendError,
+            cpal::ErrorKind::Xrun,
+        ] {
+            handler(cpal::Error::new(kind));
+        }
+        assert_eq!(status.status(), StreamStatus::default());
+        assert!(!watchdog.stalling());
     }
 
     #[test]
