@@ -134,7 +134,12 @@ impl AudioBackend for AudioHost {
         )
         .ok_or(Error::NotFound)?;
 
-        self.host = cpal::host_from_id(host_id).map_err(|e| Error::Backend(Box::new(e)))?;
+        // nothing changes unless the new host can be opened
+        let host = cpal::host_from_id(host_id).map_err(|e| Error::Backend(Box::new(e)))?;
+
+        // a running stream belongs to the old host, so stop it (like the other backends)
+        self.stop()?;
+        self.host = host;
         self.host_id = host_id;
 
         self.input_device = self.host.default_input_device();
