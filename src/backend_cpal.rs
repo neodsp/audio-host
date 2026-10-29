@@ -572,11 +572,15 @@ impl Watchdog {
         if self.millis(now).saturating_sub(since) < STALL_TIMEOUT.as_millis() as u64 {
             return;
         }
-        let error = self.error.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(error) = error {
-            status.fail(error.clone());
-            *reported = Some(error);
-        }
+        // `None` if the error missed the lock in `error`: the stream still stopped
+        let error = self
+            .error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| StreamError::Backend("the stream stopped after an error".into()));
+        status.fail(error.clone());
+        *reported = Some(error);
     }
 
     fn millis(&self, now: Instant) -> u64 {
@@ -1064,6 +1068,18 @@ mod tests {
         watchdog.callback();
         watchdog.check_at(&status, now + STALL_TIMEOUT * 2);
         assert!(!status.status().running);
+    }
+
+    #[test]
+    fn watchdog_fails_a_stalled_stream_whose_error_missed_the_lock() {
+        let (status, watchdog, now) = watched(3);
+        let held = watchdog.error.lock().unwrap();
+        watchdog.error(backend_error(), now);
+        drop(held);
+        watchdog.check_at(&status, now + STALL_TIMEOUT);
+        let status = status.status();
+        assert!(!status.running);
+        assert!(matches!(status.error, Some(StreamError::Backend(_))));
     }
 
     #[test]
