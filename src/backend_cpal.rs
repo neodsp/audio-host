@@ -529,13 +529,18 @@ impl Watchdog {
     }
 
     /// An ambiguous error arrived. Repeated errors without callbacks in between don't restart
-    /// the timeout, so a stream that keeps failing is still caught.
+    /// the timeout, so a stream that keeps failing is still caught. The first error of a stall
+    /// is the one reported, like in [`StatusTracker::fail`].
     fn error(&self, error: StreamError, now: Instant) {
-        if let Ok(mut current) = self.error.try_lock() {
+        let callbacks = self.callbacks.load(Ordering::Relaxed);
+        let new_stall = self.callbacks_at_error.load(Ordering::Acquire) != callbacks;
+        if let Ok(mut current) = self.error.try_lock()
+            // a repeated error only fills in if the first one missed the lock
+            && (new_stall || current.is_none())
+        {
             *current = Some(error);
         }
-        let callbacks = self.callbacks.load(Ordering::Relaxed);
-        if self.callbacks_at_error.load(Ordering::Acquire) != callbacks {
+        if new_stall {
             self.stalled_since_ms
                 .store(self.millis(now), Ordering::Relaxed);
             // published after the time, so `check` never pairs it with an older time
@@ -996,6 +1001,15 @@ mod tests {
         watchdog.error(backend_error(), now + STALL_TIMEOUT / 2);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         assert!(!status.status().running);
+    }
+
+    #[test]
+    fn the_first_error_of_a_stall_is_reported() {
+        let (status, watchdog, now) = watched(3);
+        watchdog.error(backend_error(), now);
+        watchdog.error(StreamError::Backend("later".into()), now);
+        watchdog.check_at(&status, now + STALL_TIMEOUT);
+        assert_eq!(status.status().error, Some(backend_error()));
     }
 
     #[test]
