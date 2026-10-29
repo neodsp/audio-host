@@ -292,8 +292,11 @@ impl AudioBackend for AudioHost {
         let input_status = self.status.clone();
         let output_status = self.status.clone();
 
+        // streams stay local until both are playing, so on any error they are dropped (closed)
+        // instead of an input stream being left running
+        let mut input_stream = None;
         if has_input && let Some(input_device) = &self.input_device {
-            let input_stream = input_device
+            let stream = input_device
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
@@ -309,12 +312,10 @@ impl AudioBackend for AudioHost {
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
-            input_stream
-                .play()
-                .map_err(|e| Error::Backend(Box::new(e)))?;
-            self.input_stream = Some(input_stream);
+            input_stream = Some(stream);
         }
 
+        let mut output_stream = None;
         if let Some(output_device) = &self.output_device {
             let output_stream_config = StreamConfig {
                 channels: num_output_channels,
@@ -329,7 +330,7 @@ impl AudioBackend for AudioHost {
             };
             let max_chunk_samples = config.num_frames * num_output_channels as usize;
 
-            let output_stream = output_device
+            let stream = output_device
                 .build_output_stream(
                     output_stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
@@ -363,13 +364,14 @@ impl AudioBackend for AudioHost {
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
-
-            output_stream
-                .play()
-                .map_err(|e| Error::Backend(Box::new(e)))?;
-            self.output_stream = Some(output_stream);
+            output_stream = Some(stream);
         }
 
+        for stream in input_stream.iter().chain(output_stream.iter()) {
+            stream.play().map_err(|e| Error::Backend(Box::new(e)))?;
+        }
+        self.input_stream = input_stream;
+        self.output_stream = output_stream;
         self.status.set_running(true);
         Ok(())
     }
