@@ -32,6 +32,8 @@ struct Run {
     output_channels: usize,
     /// Duplex callbacks where input and output blocks had a different number of frames.
     mismatched_blocks: usize,
+    /// Half-duplex callbacks where the unused block wasn't empty (0 channels, 0 frames).
+    nonempty_unused_blocks: usize,
 }
 
 /// Runs a silent stream for half a second.
@@ -40,12 +42,16 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
     let input_channels = Arc::new(AtomicUsize::new(0));
     let output_channels = Arc::new(AtomicUsize::new(0));
     let mismatched_blocks = Arc::new(AtomicUsize::new(0));
-    let (c, i, o, m) = (
+    let nonempty_unused_blocks = Arc::new(AtomicUsize::new(0));
+    let (c, i, o, m, u) = (
         callbacks.clone(),
         input_channels.clone(),
         output_channels.clone(),
         mismatched_blocks.clone(),
+        nonempty_unused_blocks.clone(),
     );
+    let input_unused = config.num_input_channels == 0;
+    let output_unused = config.num_output_channels == 0;
     let duplex = config.num_input_channels > 0 && config.num_output_channels > 0;
 
     host.start(config, move |input, mut output| {
@@ -56,6 +62,11 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
         if duplex && input.num_frames() != output.num_frames() {
             m.fetch_add(1, Ordering::Relaxed);
         }
+        let input_nonempty = input.num_channels() != 0 || input.num_frames() != 0;
+        let output_nonempty = output.num_channels() != 0 || output.num_frames() != 0;
+        if (input_unused && input_nonempty) || (output_unused && output_nonempty) {
+            u.fetch_add(1, Ordering::Relaxed);
+        }
     })?;
     std::thread::sleep(Duration::from_millis(500));
     host.stop().expect("stop failed");
@@ -65,6 +76,7 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
         input_channels: input_channels.load(Ordering::Relaxed),
         output_channels: output_channels.load(Ordering::Relaxed),
         mismatched_blocks: mismatched_blocks.load(Ordering::Relaxed),
+        nonempty_unused_blocks: nonempty_unused_blocks.load(Ordering::Relaxed),
     })
 }
 
@@ -86,6 +98,10 @@ fn output_only_stream_runs() {
     let run = run(&mut host, Config::default()).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
     assert_eq!(run.output_channels, 2);
+    assert_eq!(
+        run.nonempty_unused_blocks, 0,
+        "unused input block isn't empty"
+    );
 }
 
 #[test]
@@ -105,6 +121,10 @@ fn input_only_stream_runs() {
     let run = run(&mut host, config).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
     assert_eq!(run.input_channels, 1);
+    assert_eq!(
+        run.nonempty_unused_blocks, 0,
+        "unused output block isn't empty"
+    );
 }
 
 #[test]

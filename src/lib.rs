@@ -397,6 +397,10 @@ pub trait AudioBackend {
     ///
     /// On success the stream uses exactly the requested channel counts and sample rate.
     /// Otherwise an `Unsupported*` error reports what the device supports.
+    ///
+    /// `process_fn` gets the input and output of each callback, with the same number of
+    /// frames. In an input-only or output-only stream, the unused block is empty (0 channels,
+    /// 0 frames).
     fn start(
         &mut self,
         config: Config,

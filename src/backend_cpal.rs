@@ -265,8 +265,8 @@ impl AudioHost {
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
                         let input_block = Block::from_slice(data, num_input_channels);
-                        // empty output block, like the rtaudio backend
-                        let output_block = BlockMut::from_slice(&mut [], 1);
+                        // empty output block (0 channels, 0 frames), like the other backends
+                        let output_block = BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0);
                         process_fn(input_block, output_block);
                     },
                     error_handler(&self.status),
@@ -309,6 +309,10 @@ impl AudioHost {
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                        // the output stream failed: stop feeding it (and counting overruns)
+                        if !input_status.is_running() {
+                            return;
+                        }
                         if let Some(ref mut producer) = producer {
                             let dropped =
                                 data.iter().filter(|&&s| producer.push(s).is_err()).count();
@@ -331,7 +335,7 @@ impl AudioHost {
             let mut input_block = if has_input {
                 Interleaved::new(num_input_channels, config.num_frames)
             } else {
-                Interleaved::new(1, 0)
+                Interleaved::new(0, 0)
             };
             let max_chunk_samples = config.num_frames * num_output_channels as usize;
 
@@ -339,6 +343,12 @@ impl AudioHost {
                 .build_output_stream(
                     output_stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+                        // the stream stopped (e.g. the input device was lost): output silence
+                        // without calling `process_fn` or counting underruns
+                        if !output_status.is_running() {
+                            data.fill(0.0);
+                            return;
+                        }
                         // the driver may deliver more or fewer frames than requested. Larger
                         // callbacks are split, so input and output blocks always have the same
                         // length and never exceed `num_frames` (no allocation needed)

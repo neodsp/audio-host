@@ -303,9 +303,17 @@ impl AudioBackend for AudioHost {
                             status.add_xrun();
                         }
                         if let rtaudio::Buffers::Float32 { output, input } = buffers {
-                            let input = Block::from_slice(input, info.in_channels.max(1) as u16);
-                            let output =
-                                BlockMut::from_slice(output, info.out_channels.max(1) as u16);
+                            // an unused direction gets an empty block (0 channels, 0 frames)
+                            let input = if info.in_channels == 0 {
+                                Block::from_slice_limited(&[], 0, 0, 0, 0)
+                            } else {
+                                Block::from_slice(input, info.in_channels as u16)
+                            };
+                            let output = if info.out_channels == 0 {
+                                BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0)
+                            } else {
+                                BlockMut::from_slice(output, info.out_channels as u16)
+                            };
                             process_fn(input, output);
                         }
                     },

@@ -350,6 +350,8 @@ struct AudioCallback<F: FnMut(Block, BlockMut) + Send + 'static> {
     process_fn: F,
     input_block: Interleaved<f32>,
     output_block: Interleaved<f32>,
+    /// Frames allocated in the blocks; larger callbacks are split into chunks of this size
+    max_frames: usize,
     status: Arc<StatusTracker>,
     /// The config `start` checked; JUCE may restart the device with a different one
     num_input_channels: u16,
@@ -367,6 +369,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioCallback<F> {
             process_fn,
             input_block: Interleaved::new(0, 0),
             output_block: Interleaved::new(0, 0),
+            max_frames: 0,
             status,
             num_input_channels: config.num_input_channels,
             num_output_channels: config.num_output_channels,
@@ -381,9 +384,9 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
     fn about_to_start(&mut self, device: &mut dyn AudioIODevice) {
         let num_input_channels = device.input_channels().max(0) as u16;
         let num_output_channels = device.output_channels().max(0) as u16;
-        let num_frames = device.buffer_size();
-        self.input_block = Interleaved::new(num_input_channels, num_frames);
-        self.output_block = Interleaved::new(num_output_channels, num_frames);
+        self.max_frames = device.buffer_size().max(1);
+        self.input_block = new_block(num_input_channels, self.max_frames);
+        self.output_block = new_block(num_output_channels, self.max_frames);
 
         // JUCE also calls this after restarting the device on its own (e.g. after a sample
         // rate change in the system settings, or when an unplugged device comes back). The
@@ -410,32 +413,33 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
             return;
         }
 
-        // resize buffers
-        self.input_block
-            .set_visible(input.channels() as u16, input.samples());
-        self.output_block
-            .set_visible(output.channels() as u16, output.samples());
+        // JUCE may deliver more frames than `buffer_size()`. Larger callbacks are split, so the
+        // blocks never need to grow (no allocation, and no panic on the audio thread)
+        let num_input_channels = input.channels();
+        let num_output_channels = output.channels();
+        let num_samples = input.samples().max(output.samples());
+        let mut offset = 0;
+        while offset < num_samples {
+            let len = (num_samples - offset).min(self.max_frames);
+            set_visible(&mut self.input_block, num_input_channels, len);
+            set_visible(&mut self.output_block, num_output_channels, len);
 
-        // copy input
-        for ch in 0..input.channels() {
-            let channel = &input[ch];
-            #[allow(clippy::needless_range_loop)]
-            for frame in 0..input.samples() {
-                *self.input_block.sample_mut(ch as u16, frame) = channel[frame];
+            for ch in 0..num_input_channels {
+                let channel = input[ch].iter().skip(offset).take(len);
+                for (frame, &sample) in channel.enumerate() {
+                    *self.input_block.sample_mut(ch as u16, frame) = sample;
+                }
             }
-        }
 
-        // user process
-        (self.process_fn)(self.input_block.view(), self.output_block.view_mut());
+            (self.process_fn)(self.input_block.view(), self.output_block.view_mut());
 
-        // copy output
-        let num_samples = output.samples();
-        for ch in 0..output.channels() {
-            let channel = &mut output[ch];
-            #[allow(clippy::needless_range_loop)]
-            for frame in 0..num_samples {
-                channel[frame] = self.output_block.sample(ch as u16, frame);
+            for ch in 0..num_output_channels {
+                let channel = output[ch].iter_mut().skip(offset).take(len);
+                for (frame, sample) in channel.enumerate() {
+                    *sample = self.output_block.sample(ch as u16, frame);
+                }
             }
+            offset += len;
         }
     }
 
@@ -444,4 +448,19 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         // own. If JUCE restarts it, `about_to_start` resumes the stream.
         self.status.fail(device_stopped());
     }
+}
+
+/// A block for one direction. An unused direction gets an empty block (0 channels, 0 frames),
+/// like on the other backends.
+fn new_block(num_channels: u16, max_frames: usize) -> Interleaved<f32> {
+    if num_channels == 0 {
+        Interleaved::new(0, 0)
+    } else {
+        Interleaved::new(num_channels, max_frames)
+    }
+}
+
+fn set_visible(block: &mut Interleaved<f32>, num_channels: usize, num_frames: usize) {
+    let num_frames = if num_channels == 0 { 0 } else { num_frames };
+    block.set_visible(num_channels as u16, num_frames);
 }

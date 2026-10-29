@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The unused block in input-only and output-only streams now has 0 channels and 0 frames on
+  every backend (cpal and rtaudio passed 1 channel, juce passed the callback's frame count).
+- juce: callbacks with more frames than the device buffer size are split instead of
+  panicking on the audio thread.
+- cpal: when one direction of a duplex stream fails, the other one stops calling
+  `process_fn` and counting xruns.
 - juce: the devices selected with `set_input` / `set_output` were ignored; JUCE always opened
   its default devices.
 - juce: only the devices a stream uses are opened. Output-only streams no longer open the
