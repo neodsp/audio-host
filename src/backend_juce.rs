@@ -261,6 +261,7 @@ impl AudioBackend for AudioHost {
         // so compare what was opened with what was requested
         let (num_input_channels, num_output_channels, sample_rate, available_rates) = {
             let Some(mut device) = self.device_manager.current_device() else {
+                self.close_device();
                 return Err(Error::Backend("no audio device was opened".into()));
             };
             let available_rates: Vec<u32> = device
