@@ -3,7 +3,9 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -34,13 +36,16 @@ const _: () = {
 /// before it counts as stopped.
 const STALL_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How often the [`Monitor`] checks the watchdogs.
+const CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Audio host using cpal.
 ///
 /// Duplex streams (input and output) add 100 ms (`DUPLEX_LATENCY_MS`) of input latency.
 ///
 /// For some errors cpal doesn't say whether the stream stopped (it depends on the host), so
 /// [`status`](AudioBackend::status) only reports them once the stream stops calling back for
-/// one second.
+/// one second. A background thread checks this while a stream runs.
 pub struct AudioHost {
     host: cpal::Host,
     host_id: cpal::HostId,
@@ -49,8 +54,8 @@ pub struct AudioHost {
     output_stream: Option<Stream>,
     input_stream: Option<Stream>,
     status: Arc<StatusTracker>,
-    /// One per running stream, checked by `status`.
-    watchdogs: Vec<Arc<Watchdog>>,
+    /// Checks the watchdogs of the running streams.
+    monitor: Option<Monitor>,
 }
 
 impl Debug for AudioHost {
@@ -85,7 +90,7 @@ impl AudioBackend for AudioHost {
             output_stream: None,
             input_stream: None,
             status: Arc::default(),
-            watchdogs: Vec::new(),
+            monitor: None,
         })
     }
 
@@ -190,20 +195,17 @@ impl AudioBackend for AudioHost {
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        self.monitor = None;
         // not running first, so errors while closing aren't reported
         self.status.set_running(false);
         // dropping a stream stops and closes it; pausing first fails on devices that can't
         // pause (e.g. ALSA through PipeWire)
         self.output_stream = None;
         self.input_stream = None;
-        self.watchdogs.clear();
         Ok(())
     }
 
     fn status(&self) -> StreamStatus {
-        for watchdog in &self.watchdogs {
-            watchdog.check(&self.status);
-        }
         self.status.status()
     }
 }
@@ -285,34 +287,32 @@ impl AudioHost {
 
         let input_stream_config = stream_config(&input_ranges, num_input_channels, &config);
 
-        let input_watchdog = Arc::new(Watchdog::new());
-        let output_watchdog = Arc::new(Watchdog::new());
-
         // input-only: run the process callback directly in the input stream
         if !has_output {
             let Some(input_device) = &self.input_device else {
                 unreachable!("checked above");
             };
-            let watchdog = input_watchdog.clone();
+            let watchdog = Arc::new(Watchdog::new());
+            let callback_watchdog = watchdog.clone();
             let input_stream = input_device
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                        watchdog.callback();
+                        callback_watchdog.callback();
                         let input_block = Block::from_slice(data, num_input_channels);
                         // empty output block (0 channels, 0 frames), like the other backends
                         let output_block = BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0);
                         process_fn(input_block, output_block);
                     },
-                    error_handler(&self.status, &input_watchdog),
+                    error_handler(&self.status, &watchdog),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             input_stream
                 .play()
                 .map_err(|e| Error::Backend(Box::new(e)))?;
+            self.monitor = Some(Monitor::spawn(self.status.clone(), vec![watchdog])?);
             self.input_stream = Some(input_stream);
-            self.watchdogs = vec![input_watchdog];
             return Ok(());
         }
 
@@ -347,16 +347,16 @@ impl AudioHost {
 
         // streams stay local until both are playing, so on any error they are dropped (closed)
         // instead of an input stream being left running
+        let mut watchdogs = Vec::new();
         let mut input_stream = None;
         if has_input && let Some(input_device) = &self.input_device {
-            let watchdog = input_watchdog.clone();
-            let output_watchdog = output_watchdog.clone();
+            let watchdog = Arc::new(Watchdog::new());
+            let callback_watchdog = watchdog.clone();
             let stream = input_device
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                        watchdog.callback();
-                        output_watchdog.check(&input_status);
+                        callback_watchdog.callback();
                         // the output stream failed: stop feeding it (and counting overruns)
                         if !input_status.is_running() {
                             return;
@@ -367,11 +367,12 @@ impl AudioHost {
                             input_status.add_xrun();
                         }
                     },
-                    error_handler(&self.status, &input_watchdog),
+                    error_handler(&self.status, &watchdog),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             input_stream = Some(stream);
+            watchdogs.push(watchdog);
         }
 
         let mut output_stream = None;
@@ -382,17 +383,14 @@ impl AudioHost {
                 Interleaved::new(0, 0)
             };
             let max_chunk_samples = config.num_frames * num_output_channels as usize;
-            let watchdog = output_watchdog.clone();
-            let input_watchdog = has_input.then(|| input_watchdog.clone());
+            let watchdog = Arc::new(Watchdog::new());
+            let callback_watchdog = watchdog.clone();
 
             let stream = output_device
                 .build_output_stream(
                     output_stream_config,
                     move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                        watchdog.callback();
-                        if let Some(input_watchdog) = &input_watchdog {
-                            input_watchdog.check(&output_status);
-                        }
+                        callback_watchdog.callback();
                         // the stream stopped (e.g. the input device was lost): output silence
                         // without calling `process_fn` or counting underruns
                         if !output_status.is_running() {
@@ -419,21 +417,18 @@ impl AudioHost {
                             process_fn(input_block.view(), output_block);
                         }
                     },
-                    error_handler(&self.status, &output_watchdog),
+                    error_handler(&self.status, &watchdog),
                     None,
                 )
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             output_stream = Some(stream);
+            watchdogs.push(watchdog);
         }
 
         for stream in input_stream.iter().chain(output_stream.iter()) {
             stream.play().map_err(|e| Error::Backend(Box::new(e)))?;
         }
-        self.watchdogs = if has_input {
-            vec![input_watchdog, output_watchdog]
-        } else {
-            vec![output_watchdog]
-        };
+        self.monitor = Some(Monitor::spawn(self.status.clone(), watchdogs)?);
         self.input_stream = input_stream;
         self.output_stream = output_stream;
         Ok(())
@@ -497,8 +492,9 @@ fn error_handler(
 }
 
 /// Decides whether a stream stopped after an error cpal doesn't classify. The error only counts
-/// once the stream makes no callbacks for [`STALL_TIMEOUT`] after it. Lock-free on the audio
-/// threads: they only `try_lock` the error message.
+/// once the stream makes no callbacks for [`STALL_TIMEOUT`] after it. Checked by the
+/// [`Monitor`] thread; the stream's own threads only count callbacks and `try_lock` the error
+/// message, so they never block.
 struct Watchdog {
     /// Data callbacks of the stream so far.
     callbacks: AtomicU64,
@@ -547,40 +543,73 @@ impl Watchdog {
         }
     }
 
-    /// Fails `status` if the stream made no callbacks for [`STALL_TIMEOUT`] since the last
-    /// error. Real-time safe; while nothing went wrong it's two atomic loads.
-    fn check(&self, status: &StatusTracker) {
-        // only read the clock once there is something to time
-        if self.stalling() {
-            self.check_at(status, Instant::now());
-        }
-    }
-
     /// No callbacks since the last error.
     fn stalling(&self) -> bool {
         // `u64::MAX` before any error never matches
         self.callbacks_at_error.load(Ordering::Acquire) == self.callbacks.load(Ordering::Relaxed)
     }
 
+    /// Fails `status` if the stream made no callbacks for [`STALL_TIMEOUT`] since the last
+    /// error.
     fn check_at(&self, status: &StatusTracker, now: Instant) {
-        if !self.stalling() {
-            // no error yet, or the stream kept running after it
+        if !self.stalling() || !status.is_running() {
+            // no error yet, the stream kept running after it, or it already stopped
             return;
         }
         let since = self.stalled_since_ms.load(Ordering::Relaxed);
         if self.millis(now).saturating_sub(since) < STALL_TIMEOUT.as_millis() as u64 {
             return;
         }
-        // contended only while an error arrives: check again on the next call
-        if let Ok(error) = self.error.try_lock()
-            && let Some(error) = error.clone()
-        {
+        let error = self.error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(error) = error {
             status.fail(error);
         }
     }
 
     fn millis(&self, now: Instant) -> u64 {
         now.saturating_duration_since(self.epoch).as_millis() as u64
+    }
+}
+
+/// A thread that checks the watchdogs of the running streams every [`CHECK_INTERVAL`], so a
+/// stalled stream is reported even if no callbacks run any more and `status` isn't called.
+/// Dropping it stops the thread.
+struct Monitor {
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Monitor {
+    fn spawn(status: Arc<StatusTracker>, watchdogs: Vec<Arc<Watchdog>>) -> Result<Self, Error> {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let thread = std::thread::Builder::new()
+            .name("audio-host-watchdog".into())
+            .spawn(move || {
+                // ends as soon as the sender is dropped
+                while let Err(mpsc::RecvTimeoutError::Timeout) =
+                    stopped.recv_timeout(CHECK_INTERVAL)
+                {
+                    let now = Instant::now();
+                    for watchdog in &watchdogs {
+                        watchdog.check_at(&status, now);
+                    }
+                }
+            })
+            .map_err(|e| Error::Backend(Box::new(e)))?;
+        Ok(Self {
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        // wakes the thread right away, so joining doesn't wait for the interval
+        drop(self.stop.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -1022,6 +1051,26 @@ mod tests {
         assert!(status.status().running);
         watchdog.check_at(&status, later + STALL_TIMEOUT);
         assert!(!status.status().running);
+    }
+
+    #[test]
+    fn monitor_fails_a_stalled_stream_on_its_own() {
+        let status = Arc::new(StatusTracker::default());
+        status.set_running(true);
+        let watchdog = Arc::new(Watchdog::new());
+        watchdog.error(backend_error(), Instant::now());
+        let monitor = Monitor::spawn(status.clone(), vec![watchdog]).unwrap();
+
+        let deadline = Instant::now() + STALL_TIMEOUT * 5;
+        while status.is_running() && Instant::now() < deadline {
+            std::thread::sleep(CHECK_INTERVAL);
+        }
+        assert_eq!(status.status().error, Some(backend_error()));
+
+        // stopping doesn't wait for the next check
+        let stopping = Instant::now();
+        drop(monitor);
+        assert!(stopping.elapsed() < CHECK_INTERVAL);
     }
 
     #[test]
