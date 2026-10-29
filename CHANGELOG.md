@@ -51,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cpal: `stop()` failed on ALSA through PipeWire (`snd_pcm_pause`).
 - cpal: duplex streams could pass input and output blocks of different lengths, and the
   input drifted, when the driver delivered a different block size than `num_frames`.
+- cpal: in duplex streams with more than one input channel, an overrun or underrun of the
+  input ring buffer could shift the input channels against each other until the next one.
+  Only whole frames are buffered now.
 - cpal: underruns no longer print a line per sample from the audio thread; they are counted
   as xruns.
 - cpal: `DeviceInfo::num_channels` reported the default config's channel count instead of the

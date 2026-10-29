@@ -313,12 +313,10 @@ impl AudioHost {
                         if !input_status.is_running() {
                             return;
                         }
-                        if let Some(ref mut producer) = producer {
-                            let dropped =
-                                data.iter().filter(|&&s| producer.push(s).is_err()).count();
-                            if dropped > 0 {
-                                input_status.add_xrun();
-                            }
+                        if let Some(ref mut producer) = producer
+                            && !push_frames(producer, data, num_input_channels)
+                        {
+                            input_status.add_xrun();
                         }
                     },
                     error_handler(&self.status),
@@ -354,19 +352,13 @@ impl AudioHost {
                         // length and never exceed `num_frames` (no allocation needed)
                         for chunk in data.chunks_mut(max_chunk_samples) {
                             if let Some(ref mut consumer) = consumer {
-                                input_block.set_num_frames_visible(
-                                    chunk.len() / num_output_channels as usize,
-                                );
-                                let mut missing = 0;
-                                for frame in input_block.frames_mut() {
-                                    for sample in frame {
-                                        *sample = consumer.pop().unwrap_or_else(|_| {
-                                            missing += 1;
-                                            0.0
-                                        });
-                                    }
-                                }
-                                if missing > 0 {
+                                let num_frames = chunk.len() / num_output_channels as usize;
+                                input_block.set_num_frames_visible(num_frames);
+                                // all input channels are visible, so the visible frames are
+                                // the start of the raw data
+                                let samples = num_frames * num_input_channels as usize;
+                                let input = &mut input_block.raw_data_mut()[..samples];
+                                if !pop_frames(consumer, input, num_input_channels) {
                                     output_status.add_xrun();
                                 }
                             }
@@ -389,6 +381,34 @@ impl AudioHost {
         self.output_stream = output_stream;
         Ok(())
     }
+}
+
+/// Pushes the whole frames of `data` that fit into the ring buffer and drops the rest.
+/// Returns `false` if frames were dropped.
+///
+/// Only whole frames are moved, so the channels never get out of step: pushing sample by
+/// sample could drop the first sample of a frame and then push the second one, once the
+/// consumer frees a slot in between.
+fn push_frames(producer: &mut rtrb::Producer<f32>, data: &[f32], num_channels: u16) -> bool {
+    let num_channels = num_channels as usize;
+    // free slots only grow while the consumer runs, so all of them can be pushed
+    let fit = producer.slots().min(data.len()) / num_channels * num_channels;
+    let (pushed, _) = producer.push_partial_slice(&data[..fit]);
+    pushed.len() == data.len()
+}
+
+/// Fills `out` with whole frames from the ring buffer and the rest with silence.
+/// Returns `false` if there weren't enough frames.
+///
+/// Only whole frames are moved, for the same reason as in [`push_frames`].
+fn pop_frames(consumer: &mut rtrb::Consumer<f32>, out: &mut [f32], num_channels: u16) -> bool {
+    let num_channels = num_channels as usize;
+    // available samples only grow while the producer runs, so all of them can be popped
+    let available = consumer.slots().min(out.len()) / num_channels * num_channels;
+    let (popped, _) = consumer.pop_partial_slice(&mut out[..available]);
+    let popped = popped.len();
+    out[popped..].fill(0.0);
+    popped == out.len()
 }
 
 /// Error callback for a cpal stream, feeding the stream status.
@@ -688,6 +708,52 @@ mod tests {
         assert!(supports_rate(&ranges, 48000));
         assert!(!supports_rate(&ranges, 96000));
         assert!(!supports_rate(&[], 48000));
+    }
+
+    #[test]
+    fn ring_buffer_drops_and_pads_whole_frames() {
+        // room for 2.5 stereo frames
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(5);
+        assert!(!push_frames(
+            &mut producer,
+            &[1.0, 2.0, 1.0, 2.0, 1.0, 2.0],
+            2
+        ));
+        // the half frame that would fit is dropped as well
+        assert_eq!(producer.slots(), 1);
+
+        let mut out = [9.0; 6];
+        assert!(!pop_frames(&mut consumer, &mut out, 2));
+        assert_eq!(out, [1.0, 2.0, 1.0, 2.0, 0.0, 0.0]);
+
+        assert!(push_frames(&mut producer, &[3.0, 4.0], 2));
+        let mut out = [9.0; 2];
+        assert!(pop_frames(&mut consumer, &mut out, 2));
+        assert_eq!(out, [3.0, 4.0]);
+    }
+
+    #[test]
+    fn ring_buffer_keeps_channels_in_step_under_xruns() {
+        // a tiny buffer, so both threads keep hitting overruns and underruns
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(7);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for i in 1..200_000 {
+                    // each frame is (x, -x), so a shift between channels is easy to spot
+                    let x = (i % 1000 + 1) as f32;
+                    push_frames(&mut producer, &[x, -x, x + 0.5, -x - 0.5], 2);
+                }
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            let mut out = [0.0; 6];
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                pop_frames(&mut consumer, &mut out, 2);
+                for frame in out.chunks(2) {
+                    assert_eq!(frame[0], -frame[1], "channels out of step: {out:?}");
+                }
+            }
+        });
     }
 
     /// Feeds `kind` to the error handler of a running stream and returns the status after.
