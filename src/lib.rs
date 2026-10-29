@@ -218,8 +218,10 @@ pub type BlockMut<'a> = InterleavedViewMut<'a, f32>;
 
 pub use audio_blocks::*;
 
+/// A device listed by [`AudioBackend::inputs`] or [`AudioBackend::outputs`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct DeviceInfo {
     pub name: String,
     /// The most channels the device can open, in the direction it was listed for
@@ -278,6 +280,7 @@ pub enum StreamError {
 
 /// The state of the stream, see [`AudioBackend::status`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StreamStatus {
     /// The stream was started and hasn't been stopped by [`AudioBackend::stop`] or an error.
     pub running: bool,

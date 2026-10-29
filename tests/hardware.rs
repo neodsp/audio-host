@@ -342,3 +342,15 @@ fn selecting_apis_and_devices() {
         assert!(host.output().contains(&output.name));
     }
 }
+
+#[cfg(feature = "juce")]
+#[test]
+#[ignore = "needs audio hardware"]
+fn juce_second_host_is_an_error() {
+    let _lock = lock_devices();
+    let host = AudioHost::new().unwrap();
+    assert!(matches!(AudioHost::new(), Err(Error::Backend(_))));
+    drop(host);
+    // the slot is free again once the first host is gone
+    AudioHost::new().unwrap();
+}

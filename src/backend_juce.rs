@@ -1,4 +1,10 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::Debug,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use audio_blocks::{AudioBlock, AudioBlockMut, Interleaved};
 use cxx_juce::{
@@ -21,6 +27,10 @@ use crate::{
 /// devices are chosen in [`start`](AudioBackend::start), only for the directions the config
 /// uses. Until then [`input`](AudioBackend::input) and [`output`](AudioBackend::output) return
 /// an empty string if no device was selected.
+///
+/// JUCE can only run once per process, so only one `AudioHost` can exist at a time.
+/// [`new`](AudioBackend::new) returns an error while another one is alive. If other code in the
+/// process initialises JUCE through `cxx-juce` itself, `new` panics inside `cxx-juce` instead.
 pub struct AudioHost {
     _juce: JUCE,
     apis: Vec<String>,
@@ -35,6 +45,8 @@ pub struct AudioHost {
     default_output: String,
     handle: Option<AudioCallbackHandle>,
     status: Arc<StatusTracker>,
+    /// Last field, so it is released after JUCE has shut down (fields drop in order).
+    _instance: InstanceGuard,
 }
 
 impl Debug for AudioHost {
@@ -52,6 +64,10 @@ impl Debug for AudioHost {
 
 impl AudioBackend for AudioHost {
     fn new() -> Result<Self, Error> {
+        // declared first, so if `new` fails it is released after JUCE has shut down
+        let instance = InstanceGuard::acquire()
+            .ok_or_else(|| Error::Backend("only one JUCE AudioHost can exist at a time".into()))?;
+        // can't panic: the guard ensures this crate hasn't initialised JUCE yet
         let juce = JUCE::initialise();
         let mut device_manager = AudioDeviceManager::new(&juce);
         let mut apis = Vec::new();
@@ -72,6 +88,7 @@ impl AudioBackend for AudioHost {
             default_output: String::new(),
             handle: None,
             status: Arc::default(),
+            _instance: instance,
         })
     }
 
@@ -341,6 +358,29 @@ impl AudioHost {
     }
 }
 
+/// Set while a JUCE `AudioHost` exists.
+static INSTANCE_ALIVE: AtomicBool = AtomicBool::new(false);
+
+/// Marks a JUCE `AudioHost` as alive. `JUCE::initialise` panics if JUCE is already running,
+/// so `new` checks this first and returns an error instead.
+struct InstanceGuard;
+
+impl InstanceGuard {
+    /// `None` while another guard exists.
+    fn acquire() -> Option<Self> {
+        INSTANCE_ALIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        INSTANCE_ALIVE.store(false, Ordering::Release);
+    }
+}
+
 /// Why the stream stopped when JUCE stopped the device on its own. cxx-juce doesn't pass on
 /// JUCE's error message.
 fn device_stopped() -> StreamError {
@@ -464,4 +504,17 @@ fn new_block(num_channels: u16, max_frames: usize) -> Interleaved<f32> {
 fn set_visible(block: &mut Interleaved<f32>, num_channels: usize, num_frames: usize) {
     let num_frames = if num_channels == 0 { 0 } else { num_frames };
     block.set_visible(num_channels as u16, num_frames);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_one_instance_at_a_time() {
+        let first = InstanceGuard::acquire().expect("no other instance");
+        assert!(InstanceGuard::acquire().is_none());
+        drop(first);
+        assert!(InstanceGuard::acquire().is_some());
+    }
 }

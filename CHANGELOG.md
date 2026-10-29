@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machines without an input device.
 - `DeviceInfo::num_channels` is now `Option<u16>` and is the most channels the device can
   open. It is `None` on the juce backend, which can't tell without opening the device.
-- `Error` is now `#[non_exhaustive]`.
+- `Error`, `DeviceInfo` and the new `StreamStatus` are `#[non_exhaustive]`, so fields can be
+  added later without a breaking change. `DeviceInfo` can no longer be built with a struct
+  literal outside this crate.
 - `AudioBackend` has a new required method, `status()`.
 - `set_api`, `set_input` and `set_output` now prefer an exact name match over the first name
   containing the text.
@@ -48,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input device (which triggered the microphone permission prompt on macOS).
 - juce: `new()` no longer opens devices, so it no longer fails when a default device is busy.
 - juce: `stop()` now closes the device instead of keeping it open.
+- juce: `new()` returns `Error::Backend` while another `AudioHost` exists, instead of
+  panicking (JUCE can only run once per process).
 - cpal: `stop()` failed on ALSA through PipeWire (`snd_pcm_pause`).
 - cpal: duplex streams could pass input and output blocks of different lengths, and the
   input drifted, when the driver delivered a different block size than `num_frames`.
