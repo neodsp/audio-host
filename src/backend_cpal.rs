@@ -224,14 +224,12 @@ impl AudioBackend for AudioHost {
         if !rate_supported(&input_ranges) || !rate_supported(&output_ranges) {
             return Err(Error::UnsupportedSampleRate {
                 requested: config.sample_rate,
-                available: COMMON_SAMPLE_RATES
-                    .into_iter()
-                    .filter(|&rate| {
-                        [&input_ranges, &output_ranges]
-                            .iter()
-                            .all(|r| r.is_empty() || supports_rate(r, rate))
-                    })
-                    .collect(),
+                available: available_rates(
+                    &input_ranges,
+                    num_input_channels,
+                    &output_ranges,
+                    num_output_channels,
+                ),
             });
         }
 
@@ -446,6 +444,39 @@ fn is_f32(range: &SupportedStreamConfigRange) -> bool {
     range.sample_format() == cpal::SampleFormat::F32
 }
 
+/// The common sample rates both directions support with the requested channel counts, so
+/// retrying with one of them works. A direction without a config for its channel count uses
+/// all its configs, as retrying fails on the channel count anyway.
+fn available_rates(
+    input_ranges: &[SupportedStreamConfigRange],
+    num_input_channels: u16,
+    output_ranges: &[SupportedStreamConfigRange],
+    num_output_channels: u16,
+) -> Vec<u32> {
+    let with_channels = |ranges: &[SupportedStreamConfigRange], channels: u16| {
+        let matching: Vec<_> = ranges
+            .iter()
+            .filter(|r| r.channels() == channels)
+            .cloned()
+            .collect();
+        if matching.is_empty() {
+            ranges.to_vec()
+        } else {
+            matching
+        }
+    };
+    let input_ranges = with_channels(input_ranges, num_input_channels);
+    let output_ranges = with_channels(output_ranges, num_output_channels);
+    COMMON_SAMPLE_RATES
+        .into_iter()
+        .filter(|&rate| {
+            [&input_ranges, &output_ranges]
+                .iter()
+                .all(|r| r.is_empty() || supports_rate(r, rate))
+        })
+        .collect()
+}
+
 fn supports_rate(ranges: &[SupportedStreamConfigRange], sample_rate: u32) -> bool {
     ranges
         .iter()
@@ -517,6 +548,29 @@ mod tests {
         assert!(matches!(result, Err(Error::Backend(_))));
         // unknown configs are still left to cpal
         assert!(f32_ranges(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suggested_rates_match_the_channel_count() {
+        // 96 kHz only works in mono, so a stereo request must not be offered it
+        let input = [range(1, 44100, 96000), range(2, 44100, 48000)];
+        assert_eq!(available_rates(&input, 2, &[], 0), vec![44100, 48000]);
+        assert_eq!(
+            available_rates(&input, 1, &[], 0),
+            vec![44100, 48000, 88200, 96000]
+        );
+        // no config for the channel count: fall back to all configs
+        assert_eq!(
+            available_rates(&input, 4, &[], 0),
+            vec![44100, 48000, 88200, 96000]
+        );
+    }
+
+    #[test]
+    fn suggested_rates_work_for_both_directions() {
+        let input = [range(2, 44100, 96000)];
+        let output = [range(2, 8000, 48000)];
+        assert_eq!(available_rates(&input, 2, &output, 2), vec![44100, 48000]);
     }
 
     #[test]
