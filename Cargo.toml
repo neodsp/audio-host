@@ -3,6 +3,15 @@ authors = ["Stephan Eckes <stephan@neodsp.com>"]
 categories = ["multimedia::audio"]
 description = "A simple library to play and record audio in real-time"
 edition = "2024"
+include = [
+  "CHANGELOG.md",
+  "LICENSE.*",
+  "LINUX.md",
+  "README.md",
+  "examples/**",
+  "src/**",
+  "tests/**",
+]
 license = "MIT OR Apache-2.0"
 name = "audio-host"
 readme = "README.md"

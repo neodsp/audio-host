@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doc examples that open audio devices no longer run during `cargo test`.
 - The `feedback` example no longer prints from the audio callback and uses `?` instead of
   `unwrap()`.
+- Documented that `AudioHost` is only `Send` on the cpal backend. A compile-time check keeps
+  it that way.
 - rtaudio: documented that `status()` relies on rtaudio's process-wide error callback.
 
 ### Internal
@@ -98,6 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the hardware test with unit tests and manual hardware tests (`#[ignore]`d, run them
   with `cargo test --test hardware -- --ignored`).
 - CI now runs `cargo test` for every backend.
+- The published package only contains the sources, examples, tests, docs and licenses (no CI
+  or tooling config).
 
 ## [0.1.1] - 2026-10-19
 

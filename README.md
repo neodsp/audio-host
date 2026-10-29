@@ -143,4 +143,11 @@ fn main() -> Result<(), Error> {
 }
 ```
 
+### Threads
+
+`AudioHost` is only `Send` on the `cpal` backend: rtaudio and JUCE must stay on the thread
+that created them. For code that works with every backend, create and use the host on one
+thread and talk to it through a channel. The process callback is `Send` on every backend,
+as it runs on the audio thread.
+
 <!-- cargo-rdme end -->

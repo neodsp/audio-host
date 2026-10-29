@@ -23,6 +23,13 @@ use crate::{
 /// input goes through a ring buffer that absorbs timing differences between them.
 const DUPLEX_LATENCY_MS: u32 = 100;
 
+// cpal makes its hosts, devices and streams `Send` on every platform, and the docs promise
+// that this `AudioHost` is `Send`. Checked on every OS in CI.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<AudioHost>();
+};
+
 /// How long a stream may go without callbacks after an ambiguous error (see [`Watchdog`])
 /// before it counts as stopped.
 const STALL_TIMEOUT: Duration = Duration::from_secs(1);
