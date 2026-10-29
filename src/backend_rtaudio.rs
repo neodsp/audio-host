@@ -1,9 +1,12 @@
 use std::{
+    cell::Cell,
     fmt::Debug,
     sync::{Arc, Mutex, Once, Weak},
 };
 
-use rtaudio::{DeviceParams, Host, RtAudioErrorType, StreamConfig, StreamFlags, StreamHandle};
+use rtaudio::{
+    DeviceParams, Host, RtAudioError, RtAudioErrorType, StreamConfig, StreamFlags, StreamHandle,
+};
 
 use crate::{
     AudioBackend, Block, BlockMut, Config, DeviceInfo, Error, StatusTracker, StreamError,
@@ -16,6 +19,13 @@ pub struct AudioHost {
     output_device: Option<rtaudio::DeviceInfo>,
     stream_handle: Option<StreamHandle>,
     status: Arc<StatusTracker>,
+}
+
+impl Drop for AudioHost {
+    fn drop(&mut self) {
+        // close the stream through `stop`, so errors while closing aren't reported to other hosts
+        let _ = self.stop();
+    }
 }
 
 impl Debug for AudioHost {
@@ -32,6 +42,7 @@ impl Debug for AudioHost {
 
 impl AudioBackend for AudioHost {
     fn new() -> Result<Self, Error> {
+        let _api_call = ApiCall::enter();
         let host = Host::default();
         let input_device = host
             .iter_input_devices()
@@ -74,6 +85,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
+        let _api_call = ApiCall::enter();
         let Ok(host) = Host::new(self.api) else {
             return Vec::new();
         };
@@ -86,6 +98,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn outputs(&self) -> Vec<DeviceInfo> {
+        let _api_call = ApiCall::enter();
         let Ok(host) = Host::new(self.api) else {
             return Vec::new();
         };
@@ -98,6 +111,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
+        let _api_call = ApiCall::enter();
         let api = find_by_name(
             rtaudio::compiled_apis().iter().copied(),
             |api| Some(api.get_display_name()),
@@ -124,6 +138,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_input(&mut self, input: &str) -> Result<(), Error> {
+        let _api_call = ApiCall::enter();
         let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
         let device = find_by_name(
             host.iter_input_devices(),
@@ -136,6 +151,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn set_output(&mut self, output: &str) -> Result<(), Error> {
+        let _api_call = ApiCall::enter();
         let host = Host::new(self.api).map_err(|e| Error::Backend(Box::new(e)))?;
         let device = find_by_name(
             host.iter_output_devices(),
@@ -152,6 +168,7 @@ impl AudioBackend for AudioHost {
         config: Config,
         mut process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), Error> {
+        let _api_call = ApiCall::enter();
         self.stop()?;
         config.validate()?;
         self.status.reset();
@@ -299,6 +316,7 @@ impl AudioBackend for AudioHost {
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        let _api_call = ApiCall::enter();
         // not running first, so errors while closing aren't reported
         self.status.set_running(false);
         if let Some(mut stream_handle) = self.stream_handle.take() {
@@ -313,26 +331,41 @@ impl AudioBackend for AudioHost {
 }
 
 /// Status trackers of all rtaudio hosts. rtaudio has a single error callback per process
-/// and doesn't say which stream failed, so errors are reported to every running host.
+/// and doesn't say which stream failed, so stream errors are reported to every running host.
 static STATUS_TRACKERS: Mutex<Vec<Weak<StatusTracker>>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static IN_API_CALL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the current thread as inside one of our rtaudio calls while it lives.
+///
+/// rtaudio calls the error callback on the thread that hit the error. Errors raised during
+/// our own calls (opening a stream, listing devices, ...) are returned by that call, so they
+/// aren't stream failures. Only errors from other threads (the audio threads) are.
+struct ApiCall {
+    was_in_call: bool,
+}
+
+impl ApiCall {
+    fn enter() -> Self {
+        Self {
+            was_in_call: IN_API_CALL.replace(true),
+        }
+    }
+}
+
+impl Drop for ApiCall {
+    fn drop(&mut self) {
+        IN_API_CALL.set(self.was_in_call);
+    }
+}
 
 /// Creates a status tracker that receives rtaudio's stream errors.
 fn register_status() -> Arc<StatusTracker> {
     static ERROR_CALLBACK: Once = Once::new();
     ERROR_CALLBACK.call_once(|| {
-        rtaudio::set_error_callback(|error| {
-            let stream_error = match error.type_ {
-                RtAudioErrorType::Warning => return,
-                RtAudioErrorType::DeviceDisconnect => StreamError::DeviceLost,
-                _ => StreamError::Backend(error.to_string()),
-            };
-            let mut trackers = STATUS_TRACKERS.lock().unwrap_or_else(|e| e.into_inner());
-            trackers.retain(|tracker| tracker.strong_count() > 0);
-            for tracker in trackers.iter().filter_map(Weak::upgrade) {
-                // only affects running streams
-                tracker.fail(stream_error.clone());
-            }
-        });
+        rtaudio::set_error_callback(report_error);
     });
 
     let status = Arc::new(StatusTracker::default());
@@ -341,6 +374,24 @@ fn register_status() -> Arc<StatusTracker> {
     trackers.retain(|tracker| tracker.strong_count() > 0);
     trackers.push(Arc::downgrade(&status));
     status
+}
+
+/// rtaudio's error callback: reports stream errors to every running host.
+fn report_error(error: RtAudioError) {
+    if IN_API_CALL.get() {
+        return;
+    }
+    let stream_error = match error.type_ {
+        RtAudioErrorType::Warning => return,
+        RtAudioErrorType::DeviceDisconnect => StreamError::DeviceLost,
+        _ => StreamError::Backend(error.to_string()),
+    };
+    let mut trackers = STATUS_TRACKERS.lock().unwrap_or_else(|e| e.into_inner());
+    trackers.retain(|tracker| tracker.strong_count() > 0);
+    for tracker in trackers.iter().filter_map(Weak::upgrade) {
+        // only affects running streams
+        tracker.fail(stream_error.clone());
+    }
 }
 
 /// The rates to suggest after the device opened at `opened` instead of `rejected`.
@@ -375,6 +426,36 @@ mod tests {
         // the opened rate is always suggested
         assert_eq!(rates_without(Some(vec![96000]), 96000, 48000), vec![48000]);
         assert_eq!(rates_without(None, 96000, 48000), vec![48000]);
+    }
+
+    #[test]
+    fn only_errors_from_other_threads_fail_streams() {
+        let error = || RtAudioError {
+            type_: RtAudioErrorType::SystemError,
+            msg: Some("test".into()),
+        };
+        let status = register_status();
+        status.set_running(true);
+
+        // e.g. another host failing to open a stream: returned by that call
+        {
+            let _api_call = ApiCall::enter();
+            report_error(error());
+        }
+        assert!(status.status().running);
+
+        // a stream's audio thread, even while this thread is in a call
+        {
+            let _api_call = ApiCall::enter();
+            std::thread::spawn(move || report_error(error()))
+                .join()
+                .unwrap();
+        }
+        assert!(!status.status().running);
+        assert!(matches!(
+            status.status().error,
+            Some(StreamError::Backend(_))
+        ));
     }
 
     #[test]
