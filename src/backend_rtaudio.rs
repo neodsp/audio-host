@@ -38,9 +38,10 @@ impl Debug for AudioHost {
         f.debug_struct("AudioHost")
             .field("backend", &"RtAudio")
             .field("is_running", &self.stream_handle.is_some())
-            .field("apis", &self.apis())
-            .field("inputs", &self.inputs())
-            .field("outputs", &self.outputs())
+            // only the current selection: listing every device is slow and opens them
+            .field("api", &self.api())
+            .field("input", &self.input())
+            .field("output", &self.output())
             .finish()
     }
 }
@@ -245,7 +246,7 @@ impl AudioBackend for AudioHost {
             no_device_fallback: true,
         });
 
-        let stream_handle = Host::new(self.api)
+        let mut stream_handle = Host::new(self.api)
             .map_err(|e| Error::Backend(Box::new(e)))?
             .open_stream(&StreamConfig {
                 input_device: input_params,
@@ -290,41 +291,38 @@ impl AudioBackend for AudioHost {
 
         let status = self.status.clone();
         self.status.set_running(true);
-        self.stream_handle = Some(stream_handle);
-        self.stream_handle
-            .as_mut()
-            .map(|handle| {
-                handle.start(
-                    move |buffers: rtaudio::Buffers<'_>,
-                          info: &rtaudio::StreamInfo,
-                          stream_status: rtaudio::StreamStatus| {
-                        // input overflow or output underflow since the last callback
-                        if !stream_status.is_empty() {
-                            status.add_xrun();
-                        }
-                        if let rtaudio::Buffers::Float32 { output, input } = buffers {
-                            // an unused direction gets an empty block (0 channels, 0 frames)
-                            let input = if info.in_channels == 0 {
-                                Block::from_slice_limited(&[], 0, 0, 0, 0)
-                            } else {
-                                Block::from_slice(input, info.in_channels as u16)
-                            };
-                            let output = if info.out_channels == 0 {
-                                BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0)
-                            } else {
-                                BlockMut::from_slice(output, info.out_channels as u16)
-                            };
-                            process_fn(input, output);
-                        }
-                    },
-                )
-            })
-            .transpose()
-            .map_err(|e| {
-                self.status.set_running(false);
-                Error::Backend(Box::new(e))
-            })?;
+        let result = stream_handle.start(
+            move |buffers: rtaudio::Buffers<'_>,
+                  info: &rtaudio::StreamInfo,
+                  stream_status: rtaudio::StreamStatus| {
+                // input overflow or output underflow since the last callback
+                if !stream_status.is_empty() {
+                    status.add_xrun();
+                }
+                if let rtaudio::Buffers::Float32 { output, input } = buffers {
+                    // an unused direction gets an empty block (0 channels, 0 frames)
+                    let input = if info.in_channels == 0 {
+                        Block::from_slice_limited(&[], 0, 0, 0, 0)
+                    } else {
+                        Block::from_slice(input, info.in_channels as u16)
+                    };
+                    let output = if info.out_channels == 0 {
+                        BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0)
+                    } else {
+                        BlockMut::from_slice(output, info.out_channels as u16)
+                    };
+                    process_fn(input, output);
+                }
+            },
+        );
+        if let Err(e) = result {
+            // the handle is dropped here, which closes the stream
+            self.status.set_running(false);
+            return Err(Error::Backend(Box::new(e)));
+        }
 
+        // only kept once it's running, so a failed start doesn't hold the device open
+        self.stream_handle = Some(stream_handle);
         Ok(())
     }
 

@@ -37,9 +37,10 @@ impl Debug for AudioHost {
                 "is_running",
                 &(self.output_stream.is_some() || self.input_stream.is_some()),
             )
-            .field("apis", &self.apis())
-            .field("inputs", &self.inputs())
-            .field("outputs", &self.outputs())
+            // only the current selection: listing every device is slow and opens them
+            .field("api", &self.api())
+            .field("input", &self.input())
+            .field("output", &self.output())
             .finish()
     }
 }
@@ -282,10 +283,18 @@ impl AudioHost {
 
         // with an output, the process callback runs in the output stream and gets the input
         // through a ring buffer
+        let output_stream_config = stream_config(&output_ranges, num_output_channels, &config);
+
         let (mut producer, mut consumer) = if has_input {
             let latency_samples = (DUPLEX_LATENCY_MS as usize * config.sample_rate as usize / 1000)
                 * num_input_channels as usize;
-            let input_block_size = num_input_channels as usize * config.num_frames;
+            // the buffer sizes can be clamped above `num_frames`, so size the headroom from the
+            // largest block either stream moves at once
+            let block_frames = config
+                .num_frames
+                .max(buffer_frames(&input_stream_config))
+                .max(buffer_frames(&output_stream_config));
+            let input_block_size = num_input_channels as usize * block_frames;
             let (mut producer, consumer) =
                 RingBuffer::<f32>::new(latency_samples + 10 * input_block_size);
 
@@ -328,8 +337,6 @@ impl AudioHost {
 
         let mut output_stream = None;
         if let Some(output_device) = &self.output_device {
-            let output_stream_config = stream_config(&output_ranges, num_output_channels, &config);
-
             let mut input_block = if has_input {
                 Interleaved::new(num_input_channels, config.num_frames)
             } else {
@@ -453,6 +460,14 @@ fn stream_config(
         channels,
         sample_rate: config.sample_rate,
         buffer_size: buffer_size(ranges, channels, config.sample_rate, config.num_frames),
+    }
+}
+
+/// The fixed buffer size `config` requests, `0` if it leaves the size to cpal.
+fn buffer_frames(config: &StreamConfig) -> usize {
+    match config.buffer_size {
+        cpal::BufferSize::Fixed(frames) => frames as usize,
+        _ => 0,
     }
 }
 

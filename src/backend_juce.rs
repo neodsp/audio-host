@@ -42,9 +42,10 @@ impl Debug for AudioHost {
         f.debug_struct("AudioHost")
             .field("backend", &"JUCE")
             .field("is_running", &self.handle.is_some())
-            .field("apis", &self.apis())
-            .field("inputs", &self.inputs())
-            .field("outputs", &self.outputs())
+            // only the current selection: listing every device is slow and opens them
+            .field("api", &self.api())
+            .field("input", &self.input())
+            .field("output", &self.output())
             .finish()
     }
 }

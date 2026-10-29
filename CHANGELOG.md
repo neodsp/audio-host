@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cpal: only f32 configs are considered, as the streams always use f32. Devices without them
   fail with a clear error instead of a generic one.
 - `api()`, `inputs()`, `outputs()`, `input()`, `output()` and `Debug` could panic.
+- rtaudio: a `start()` whose stream fails to start no longer keeps the device open until the
+  next `stop()`.
+- cpal: the duplex ring buffer is sized from the buffer sizes the streams actually use, so
+  devices whose minimum buffer size is above `num_frames` no longer overrun it.
+- `Debug` for `AudioHost` no longer lists every device (slow, and it touched the devices); it
+  shows the current API, input and output.
 
 ### Documentation
 
@@ -74,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented strict configs, monitoring the stream with `status()` and how device names are
   matched.
 - Doc examples that open audio devices no longer run during `cargo test`.
+- The `feedback` example no longer prints from the audio callback and uses `?` instead of
+  `unwrap()`.
 - rtaudio: documented that `status()` relies on rtaudio's process-wide error callback.
 
 ### Internal
