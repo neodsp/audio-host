@@ -89,41 +89,15 @@ impl AudioBackend for AudioHost {
     }
 
     fn inputs(&self) -> Vec<DeviceInfo> {
-        self.host
-            .input_devices()
-            .ok()
-            .map(|devices| {
-                devices
-                    .filter_map(|device| {
-                        let name = device_name(&device)?;
-                        let num_channels = device
-                            .supported_input_configs()
-                            .ok()
-                            .and_then(|configs| configs.filter(is_f32).map(|c| c.channels()).max());
-                        Some(DeviceInfo { name, num_channels })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        device_infos(self.host.input_devices().ok(), |device| {
+            device.supported_input_configs().ok()
+        })
     }
 
     fn outputs(&self) -> Vec<DeviceInfo> {
-        self.host
-            .output_devices()
-            .ok()
-            .map(|devices| {
-                devices
-                    .filter_map(|device| {
-                        let name = device_name(&device)?;
-                        let num_channels = device
-                            .supported_output_configs()
-                            .ok()
-                            .and_then(|configs| configs.filter(is_f32).map(|c| c.channels()).max());
-                        Some(DeviceInfo { name, num_channels })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        device_infos(self.host.output_devices().ok(), |device| {
+            device.supported_output_configs().ok()
+        })
     }
 
     fn set_api(&mut self, name: &str) -> Result<(), Error> {
@@ -279,16 +253,7 @@ impl AudioHost {
             },
         )?;
 
-        let input_stream_config = StreamConfig {
-            channels: num_input_channels,
-            sample_rate: config.sample_rate,
-            buffer_size: buffer_size(
-                &input_ranges,
-                num_input_channels,
-                config.sample_rate,
-                config.num_frames,
-            ),
-        };
+        let input_stream_config = stream_config(&input_ranges, num_input_channels, &config);
 
         // input-only: run the process callback directly in the input stream
         if !has_output {
@@ -361,16 +326,7 @@ impl AudioHost {
 
         let mut output_stream = None;
         if let Some(output_device) = &self.output_device {
-            let output_stream_config = StreamConfig {
-                channels: num_output_channels,
-                sample_rate: config.sample_rate,
-                buffer_size: buffer_size(
-                    &output_ranges,
-                    num_output_channels,
-                    config.sample_rate,
-                    config.num_frames,
-                ),
-            };
+            let output_stream_config = stream_config(&output_ranges, num_output_channels, &config);
 
             let mut input_block = if has_input {
                 Interleaved::new(num_input_channels, config.num_frames)
@@ -437,6 +393,36 @@ fn error_handler(status: &Arc<StatusTracker>) -> impl FnMut(cpal::Error) + Send 
         | cpal::ErrorKind::RealtimeDenied => {}
         cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
         _ => status.fail(StreamError::Backend(error.to_string())),
+    }
+}
+
+/// Lists `devices` with the most f32 channels `configs` reports for each.
+fn device_infos<C: Iterator<Item = SupportedStreamConfigRange>>(
+    devices: Option<impl Iterator<Item = cpal::Device>>,
+    configs: impl Fn(&cpal::Device) -> Option<C>,
+) -> Vec<DeviceInfo> {
+    devices
+        .into_iter()
+        .flatten()
+        .filter_map(|device| {
+            let name = device_name(&device)?;
+            let num_channels = configs(&device)
+                .and_then(|configs| configs.filter(is_f32).map(|c| c.channels()).max());
+            Some(DeviceInfo { name, num_channels })
+        })
+        .collect()
+}
+
+/// The stream config for one direction of `config`.
+fn stream_config(
+    ranges: &[SupportedStreamConfigRange],
+    channels: u16,
+    config: &Config,
+) -> StreamConfig {
+    StreamConfig {
+        channels,
+        sample_rate: config.sample_rate,
+        buffer_size: buffer_size(ranges, channels, config.sample_rate, config.num_frames),
     }
 }
 
