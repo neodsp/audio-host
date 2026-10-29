@@ -329,13 +329,30 @@ fn register_status() -> Arc<StatusTracker> {
     });
 
     let status = Arc::new(StatusTracker::default());
-    STATUS_TRACKERS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(Arc::downgrade(&status));
+    let mut trackers = STATUS_TRACKERS.lock().unwrap_or_else(|e| e.into_inner());
+    // drop the trackers of hosts that are gone, so the list doesn't grow with every new host
+    trackers.retain(|tracker| tracker.strong_count() > 0);
+    trackers.push(Arc::downgrade(&status));
     status
 }
 
 fn to_u16(value: u32) -> u16 {
     value.min(u16::MAX as u32) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_status_trackers_are_removed() {
+        for _ in 0..100 {
+            drop(register_status());
+        }
+        let _status = register_status();
+        // other tests may register trackers at the same time, so only check it didn't grow
+        // with every dropped tracker
+        let len = STATUS_TRACKERS.lock().unwrap().len();
+        assert!(len < 100, "{len} trackers kept");
+    }
 }
