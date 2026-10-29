@@ -301,9 +301,10 @@ pub(crate) struct StatusTracker {
 impl StatusTracker {
     /// Clears errors and xruns before a new stream starts.
     pub(crate) fn reset(&self) {
+        let mut error = self.error.lock().unwrap_or_else(|e| e.into_inner());
         self.running.store(false, Ordering::Relaxed);
         self.xruns.store(0, Ordering::Relaxed);
-        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *error = None;
     }
 
     pub(crate) fn set_running(&self, running: bool) {
@@ -321,19 +322,22 @@ impl StatusTracker {
 
     /// Marks a running stream as stopped by `error`. The first error is kept.
     pub(crate) fn fail(&self, error: StreamError) {
+        // `running` changes under the error lock, so `status` never sees a stopped stream
+        // whose error isn't stored yet
+        let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
         if !self.running.swap(false, Ordering::Relaxed) {
             return;
         }
-        let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
         if current.is_none() {
             *current = Some(error);
         }
     }
 
     pub(crate) fn status(&self) -> StreamStatus {
+        let error = self.error.lock().unwrap_or_else(|e| e.into_inner());
         StreamStatus {
             running: self.is_running(),
-            error: self.error.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            error: error.clone(),
             xruns: self.xruns.load(Ordering::Relaxed),
         }
     }
@@ -491,6 +495,27 @@ mod tests {
 
         status.reset();
         assert_eq!(status.status(), StreamStatus::default());
+    }
+
+    #[test]
+    fn status_never_shows_a_stopped_stream_without_its_error() {
+        for _ in 0..1000 {
+            let status = StatusTracker::default();
+            status.set_running(true);
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    // poll like a caller would until the stream stops
+                    loop {
+                        let current = status.status();
+                        if !current.running {
+                            assert_eq!(current.error, Some(StreamError::DeviceLost));
+                            break;
+                        }
+                    }
+                });
+                status.fail(StreamError::DeviceLost);
+            });
+        }
     }
 
     #[test]
