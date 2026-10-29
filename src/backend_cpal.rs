@@ -505,6 +505,9 @@ struct Watchdog {
     epoch: Instant,
     /// The error to report if the stream stalled.
     error: Mutex<Option<StreamError>>,
+    /// The error this watchdog stopped the stream with, so it can resume it. Only used by the
+    /// monitor thread.
+    reported: Mutex<Option<StreamError>>,
 }
 
 impl Watchdog {
@@ -515,6 +518,7 @@ impl Watchdog {
             stalled_since_ms: AtomicU64::new(0),
             epoch: Instant::now(),
             error: Mutex::new(None),
+            reported: Mutex::new(None),
         }
     }
 
@@ -550,10 +554,18 @@ impl Watchdog {
     }
 
     /// Fails `status` if the stream made no callbacks for [`STALL_TIMEOUT`] since the last
-    /// error.
+    /// error, and resumes it once the stream calls back again (e.g. after ALSA recovered
+    /// slowly).
     fn check_at(&self, status: &StatusTracker, now: Instant) {
-        if !self.stalling() || !status.is_running() {
-            // no error yet, the stream kept running after it, or it already stopped
+        let mut reported = self.reported.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.stalling() {
+            // only resumes if nothing else stopped the stream since
+            if let Some(error) = reported.take() {
+                status.resume_after(&error);
+            }
+            return;
+        }
+        if !status.is_running() {
             return;
         }
         let since = self.stalled_since_ms.load(Ordering::Relaxed);
@@ -562,7 +574,8 @@ impl Watchdog {
         }
         let error = self.error.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(error) = error {
-            status.fail(error);
+            status.fail(error.clone());
+            *reported = Some(error);
         }
     }
 
@@ -1011,6 +1024,46 @@ mod tests {
                 xruns: 0,
             }
         );
+    }
+
+    #[test]
+    fn watchdog_resumes_a_stream_that_calls_back_again() {
+        let (status, watchdog, now) = watched(3);
+        watchdog.error(backend_error(), now);
+        watchdog.check_at(&status, now + STALL_TIMEOUT);
+        assert!(!status.status().running);
+
+        watchdog.callback();
+        watchdog.check_at(&status, now + STALL_TIMEOUT * 2);
+        assert_eq!(
+            status.status(),
+            StreamStatus {
+                running: true,
+                error: None,
+                xruns: 0
+            }
+        );
+    }
+
+    #[test]
+    fn watchdog_doesnt_resume_a_stream_stopped_by_something_else() {
+        let (status, watchdog, now) = watched(3);
+        status.fail(StreamError::DeviceLost);
+        watchdog.error(backend_error(), now);
+        watchdog.check_at(&status, now + STALL_TIMEOUT);
+        watchdog.callback();
+        watchdog.check_at(&status, now + STALL_TIMEOUT * 2);
+        assert_eq!(status.status().error, Some(StreamError::DeviceLost));
+        assert!(!status.status().running);
+
+        // stopped by the stall, then the status was reset (e.g. by a restart)
+        let (status, watchdog, now) = watched(3);
+        watchdog.error(backend_error(), now);
+        watchdog.check_at(&status, now + STALL_TIMEOUT);
+        status.reset();
+        watchdog.callback();
+        watchdog.check_at(&status, now + STALL_TIMEOUT * 2);
+        assert!(!status.status().running);
     }
 
     #[test]

@@ -54,8 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panicking (JUCE can only run once per process).
 - cpal: errors whose effect depends on the host (e.g. `BackendError`, which ALSA survives but
   WASAPI and PulseAudio don't) no longer stop the stream right away. They are reported by
-  `status()` only if the stream then makes no callbacks for one second. Before, a transient
-  error on ALSA silenced a duplex stream for good.
+  `status()` only if the stream then makes no callbacks for one second, and the stream counts
+  as running again if it starts calling back later. Before, a transient error on ALSA silenced
+  a duplex stream for good.
 - Errors reported after a stream already stopped no longer take a lock on the audio thread.
 - cpal: `stop()` failed on ALSA through PipeWire (`snd_pcm_pause`).
 - cpal: duplex streams could pass input and output blocks of different lengths, and the
