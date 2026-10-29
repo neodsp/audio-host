@@ -173,12 +173,45 @@ impl AudioBackend for AudioHost {
     fn start(
         &mut self,
         config: Config,
-        mut process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
+        process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), Error> {
         self.stop()?;
         config.validate()?;
         self.status.reset();
 
+        // running before the streams start, so errors they report right away aren't ignored.
+        // start then still succeeds, and status() reports the error.
+        self.status.set_running(true);
+        let result = self.open_streams(config, process_fn);
+        if result.is_err() {
+            self.status.reset();
+        }
+        result
+    }
+
+    fn stop(&mut self) -> Result<(), Error> {
+        // not running first, so errors while closing aren't reported
+        self.status.set_running(false);
+        // dropping a stream stops and closes it; pausing first fails on devices that can't
+        // pause (e.g. ALSA through PipeWire)
+        self.output_stream = None;
+        self.input_stream = None;
+        Ok(())
+    }
+
+    fn status(&self) -> StreamStatus {
+        self.status.status()
+    }
+}
+
+impl AudioHost {
+    /// Checks the request and opens and starts the streams. Stores them only if all of them
+    /// started.
+    fn open_streams(
+        &mut self,
+        config: Config,
+        mut process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
+    ) -> Result<(), Error> {
         let num_input_channels = config.num_input_channels;
         let num_output_channels = config.num_output_channels;
         let has_input = num_input_channels > 0;
@@ -274,7 +307,6 @@ impl AudioBackend for AudioHost {
                 .play()
                 .map_err(|e| Error::Backend(Box::new(e)))?;
             self.input_stream = Some(input_stream);
-            self.status.set_running(true);
             return Ok(());
         }
 
@@ -379,22 +411,7 @@ impl AudioBackend for AudioHost {
         }
         self.input_stream = input_stream;
         self.output_stream = output_stream;
-        self.status.set_running(true);
         Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), Error> {
-        // not running first, so errors while closing aren't reported
-        self.status.set_running(false);
-        // dropping a stream stops and closes it; pausing first fails on devices that can't
-        // pause (e.g. ALSA through PipeWire)
-        self.output_stream = None;
-        self.input_stream = None;
-        Ok(())
-    }
-
-    fn status(&self) -> StreamStatus {
-        self.status.status()
     }
 }
 
