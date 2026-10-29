@@ -401,8 +401,11 @@ fn error_handler(status: &Arc<StatusTracker>) -> impl FnMut(cpal::Error) + Send 
     let status = status.clone();
     move |error| match error.kind() {
         cpal::ErrorKind::Xrun => status.add_xrun(),
-        // the stream keeps running in these cases
-        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::ResourceExhausted => {}
+        // the stream keeps running in these cases (RealtimeDenied: audio plays without
+        // real-time priority)
+        cpal::ErrorKind::DeviceChanged
+        | cpal::ErrorKind::ResourceExhausted
+        | cpal::ErrorKind::RealtimeDenied => {}
         cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
         _ => status.fail(StreamError::Backend(error.to_string())),
     }
@@ -504,5 +507,44 @@ mod tests {
         assert!(supports_rate(&ranges, 48000));
         assert!(!supports_rate(&ranges, 96000));
         assert!(!supports_rate(&[], 48000));
+    }
+
+    /// Feeds `kind` to the error handler of a running stream and returns the status after.
+    fn status_after(kind: cpal::ErrorKind) -> StreamStatus {
+        let status = Arc::new(StatusTracker::default());
+        status.set_running(true);
+        error_handler(&status)(cpal::Error::new(kind));
+        status.status()
+    }
+
+    #[test]
+    fn error_handler_keeps_running_on_non_fatal_errors() {
+        for kind in [
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::ResourceExhausted,
+            cpal::ErrorKind::RealtimeDenied,
+        ] {
+            let status = status_after(kind);
+            assert!(status.running, "{kind:?}");
+            assert_eq!(status.error, None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn error_handler_counts_xruns() {
+        let status = status_after(cpal::ErrorKind::Xrun);
+        assert!(status.running);
+        assert_eq!(status.xruns, 1);
+    }
+
+    #[test]
+    fn error_handler_stops_on_fatal_errors() {
+        let status = status_after(cpal::ErrorKind::DeviceNotAvailable);
+        assert!(!status.running);
+        assert_eq!(status.error, Some(StreamError::DeviceLost));
+
+        let status = status_after(cpal::ErrorKind::StreamInvalidated);
+        assert!(!status.running);
+        assert!(matches!(status.error, Some(StreamError::Backend(_))));
     }
 }
