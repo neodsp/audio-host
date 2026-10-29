@@ -99,7 +99,7 @@ impl AudioBackend for AudioHost {
                         let num_channels = device
                             .supported_input_configs()
                             .ok()
-                            .and_then(|configs| configs.map(|c| c.channels()).max());
+                            .and_then(|configs| configs.filter(is_f32).map(|c| c.channels()).max());
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()
@@ -118,7 +118,7 @@ impl AudioBackend for AudioHost {
                         let num_channels = device
                             .supported_output_configs()
                             .ok()
-                            .and_then(|configs| configs.map(|c| c.channels()).max());
+                            .and_then(|configs| configs.filter(is_f32).map(|c| c.channels()).max());
                         Some(DeviceInfo { name, num_channels })
                     })
                     .collect()
@@ -199,18 +199,22 @@ impl AudioBackend for AudioHost {
         }
 
         // devices that can't list their configs are left to cpal to report
-        let input_ranges: Vec<_> = match (&self.input_device, has_input) {
-            (Some(device), true) => device
-                .supported_input_configs()
-                .map(|c| c.collect())
-                .unwrap_or_default(),
+        let input_ranges = match (&self.input_device, has_input) {
+            (Some(device), true) => f32_ranges(
+                device
+                    .supported_input_configs()
+                    .map(|c| c.collect())
+                    .unwrap_or_default(),
+            )?,
             _ => Vec::new(),
         };
-        let output_ranges: Vec<_> = match (&self.output_device, has_output) {
-            (Some(device), true) => device
-                .supported_output_configs()
-                .map(|c| c.collect())
-                .unwrap_or_default(),
+        let output_ranges = match (&self.output_device, has_output) {
+            (Some(device), true) => f32_ranges(
+                device
+                    .supported_output_configs()
+                    .map(|c| c.collect())
+                    .unwrap_or_default(),
+            )?,
             _ => Vec::new(),
         };
 
@@ -421,6 +425,27 @@ const COMMON_SAMPLE_RATES: [u32; 11] = [
     8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000,
 ];
 
+/// The ranges the streams can use: they always request f32 samples. Errors if the device lists
+/// configs but none with f32. An empty list (configs unknown) is passed on.
+fn f32_ranges(
+    ranges: Vec<SupportedStreamConfigRange>,
+) -> Result<Vec<SupportedStreamConfigRange>, Error> {
+    if ranges.is_empty() {
+        return Ok(ranges);
+    }
+    let f32_ranges: Vec<_> = ranges.into_iter().filter(is_f32).collect();
+    if f32_ranges.is_empty() {
+        return Err(Error::Backend(
+            "the device doesn't support 32-bit float samples".into(),
+        ));
+    }
+    Ok(f32_ranges)
+}
+
+fn is_f32(range: &SupportedStreamConfigRange) -> bool {
+    range.sample_format() == cpal::SampleFormat::F32
+}
+
 fn supports_rate(ranges: &[SupportedStreamConfigRange], sample_rate: u32) -> bool {
     ranges
         .iter()
@@ -466,6 +491,32 @@ mod tests {
             SupportedBufferSize::Unknown,
             SampleFormat::F32,
         )
+    }
+
+    fn i16_range(channels: u16, min_rate: u32, max_rate: u32) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(
+            channels,
+            min_rate,
+            max_rate,
+            SupportedBufferSize::Unknown,
+            SampleFormat::I16,
+        )
+    }
+
+    #[test]
+    fn only_f32_ranges_are_used() {
+        let ranges = f32_ranges(vec![i16_range(8, 44100, 96000), range(2, 44100, 48000)]).unwrap();
+        assert_eq!(ranges.len(), 1);
+        // 8 channels are only available as i16, which the streams can't open
+        assert_eq!(check_channels(&ranges, 8, 48000), Err(2));
+    }
+
+    #[test]
+    fn devices_without_f32_are_rejected() {
+        let result = f32_ranges(vec![i16_range(2, 44100, 48000)]);
+        assert!(matches!(result, Err(Error::Backend(_))));
+        // unknown configs are still left to cpal
+        assert!(f32_ranges(Vec::new()).unwrap().is_empty());
     }
 
     #[test]
