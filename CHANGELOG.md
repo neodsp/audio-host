@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JUCE only knows its default devices after opening them.
 - juce: `set_api` returns `Error::NotFound` for unknown APIs and APIs without devices (it
   used to return `Ok`).
+- cpal, rtaudio: `set_api` now stops a running stream, like the juce backend.
 
 ### Added
 
@@ -49,7 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cpal: `DeviceInfo::num_channels` reported the default config's channel count instead of the
   maximum, and devices whose default config couldn't be read were missing from the lists.
 - rtaudio: a selected device that can't be found no longer silently falls back to the default
-  device.
+  device or to another device with the same name.
+- rtaudio: `set_api` no longer switches the API when the new one can't be opened.
+- cpal: a duplex `start()` whose output fails no longer leaves the input stream capturing.
+- cpal: `num_frames` outside the device's supported buffer sizes no longer makes `start()`
+  fail; it is clamped to the supported range.
+- cpal: only f32 configs are considered, as the streams always use f32. Devices without them
+  fail with a clear error instead of a generic one.
 - `api()`, `inputs()`, `outputs()`, `input()`, `output()` and `Debug` could panic.
 
 ### Documentation
@@ -58,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented strict configs, monitoring the stream with `status()` and how device names are
   matched.
 - Doc examples that open audio devices no longer run during `cargo test`.
+- rtaudio: documented that `status()` relies on rtaudio's process-wide error callback.
 
 ### Internal
 
