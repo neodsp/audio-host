@@ -325,6 +325,10 @@ impl StatusTracker {
 
     /// Marks a running stream as stopped by `error`. The first error is kept.
     pub(crate) fn fail(&self, error: StreamError) {
+        // already stopped: skip the lock, so repeated errors don't take it on the audio thread
+        if !self.is_running() {
+            return;
+        }
         // `running` changes under the error lock, so `status` never sees a stopped stream
         // whose error isn't stored yet
         let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
