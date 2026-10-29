@@ -18,7 +18,7 @@ const DUPLEX_LATENCY_MS: u32 = 100;
 
 /// Audio host using cpal.
 ///
-/// Duplex streams (input and output) add [`DUPLEX_LATENCY_MS`] of input latency.
+/// Duplex streams (input and output) add 100 ms (`DUPLEX_LATENCY_MS`) of input latency.
 pub struct AudioHost {
     host: cpal::Host,
     host_id: cpal::HostId,
