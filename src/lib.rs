@@ -333,6 +333,16 @@ impl StatusTracker {
         }
     }
 
+    /// Marks the stream as running again if it was stopped by `error`, e.g. when the backend
+    /// restarted the device on its own. Does nothing after `stop` or other errors.
+    pub(crate) fn resume_after(&self, error: &StreamError) {
+        let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
+        if current.as_ref() == Some(error) {
+            *current = None;
+            self.running.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn status(&self) -> StreamStatus {
         let error = self.error.lock().unwrap_or_else(|e| e.into_inner());
         StreamStatus {
@@ -516,6 +526,34 @@ mod tests {
                 status.fail(StreamError::DeviceLost);
             });
         }
+    }
+
+    #[test]
+    fn status_resumes_only_after_the_given_error() {
+        let stopped = StreamError::Backend("stopped".into());
+        let status = StatusTracker::default();
+
+        // stopped by the user: stays stopped
+        status.resume_after(&stopped);
+        assert!(!status.status().running);
+
+        // another error: stays failed
+        status.set_running(true);
+        status.fail(StreamError::DeviceLost);
+        status.resume_after(&stopped);
+        assert_eq!(status.status().error, Some(StreamError::DeviceLost));
+
+        status.reset();
+        status.set_running(true);
+        status.fail(stopped.clone());
+        status.resume_after(&stopped);
+        assert_eq!(
+            status.status(),
+            StreamStatus {
+                running: true,
+                ..StreamStatus::default()
+            }
+        );
     }
 
     #[test]

@@ -303,10 +303,11 @@ impl AudioBackend for AudioHost {
         }
 
         self.status.set_running(true);
-        self.handle = Some(
-            self.device_manager
-                .add_audio_callback(AudioCallback::new(process_fn, self.status.clone())),
-        );
+        self.handle = Some(self.device_manager.add_audio_callback(AudioCallback::new(
+            process_fn,
+            &config,
+            self.status.clone(),
+        )));
 
         Ok(())
     }
@@ -339,31 +340,62 @@ impl AudioHost {
     }
 }
 
+/// Why the stream stopped when JUCE stopped the device on its own. cxx-juce doesn't pass on
+/// JUCE's error message.
+fn device_stopped() -> StreamError {
+    StreamError::Backend("audio device stopped unexpectedly".into())
+}
+
 struct AudioCallback<F: FnMut(Block, BlockMut) + Send + 'static> {
     process_fn: F,
     input_block: Interleaved<f32>,
     output_block: Interleaved<f32>,
     status: Arc<StatusTracker>,
+    /// The config `start` checked; JUCE may restart the device with a different one
+    num_input_channels: u16,
+    num_output_channels: u16,
+    sample_rate: u32,
+    /// JUCE called `about_to_start` before, so the next call is a restart
+    started: bool,
+    /// The device runs with the config, so `process_fn` is called
+    active: bool,
 }
 
 impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioCallback<F> {
-    pub fn new(process_fn: F, status: Arc<StatusTracker>) -> Self {
+    pub fn new(process_fn: F, config: &Config, status: Arc<StatusTracker>) -> Self {
         Self {
             process_fn,
             input_block: Interleaved::new(0, 0),
             output_block: Interleaved::new(0, 0),
             status,
+            num_input_channels: config.num_input_channels,
+            num_output_channels: config.num_output_channels,
+            sample_rate: config.sample_rate,
+            started: false,
+            active: false,
         }
     }
 }
 
 impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for AudioCallback<F> {
     fn about_to_start(&mut self, device: &mut dyn AudioIODevice) {
-        let num_input_channels = device.input_channels() as u16;
-        let num_output_channels = device.output_channels() as u16;
+        let num_input_channels = device.input_channels().max(0) as u16;
+        let num_output_channels = device.output_channels().max(0) as u16;
         let num_frames = device.buffer_size();
         self.input_block = Interleaved::new(num_input_channels, num_frames);
         self.output_block = Interleaved::new(num_output_channels, num_frames);
+
+        // JUCE also calls this after restarting the device on its own (e.g. after a sample
+        // rate change in the system settings, or when an unplugged device comes back). The
+        // stream continues if the device still matches the config, otherwise it stays stopped
+        // and outputs silence, so `process_fn` never sees a different config.
+        self.active = num_input_channels == self.num_input_channels
+            && num_output_channels == self.num_output_channels
+            && (device.sample_rate() - self.sample_rate as f64).abs() <= 0.5;
+        if self.started && self.active {
+            self.status.resume_after(&device_stopped());
+        }
+        self.started = true;
     }
 
     fn process_block(
@@ -371,6 +403,13 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
         input: &InputAudioSampleBuffer,
         output: &mut OutputAudioSampleBuffer,
     ) {
+        if !self.active {
+            for ch in 0..output.channels() {
+                output[ch].fill(0.0);
+            }
+            return;
+        }
+
         // resize buffers
         self.input_block
             .set_visible(input.channels() as u16, input.samples());
@@ -402,9 +441,7 @@ impl<F: FnMut(Block, BlockMut) + Send + 'static> AudioIODeviceCallback for Audio
 
     fn stopped(&mut self) {
         // `stop` marks the stream as not running first, so this is the device stopping on its
-        // own. cxx-juce doesn't pass on JUCE's error message.
-        self.status.fail(StreamError::Backend(
-            "audio device stopped unexpectedly".into(),
-        ));
+        // own. If JUCE restarts it, `about_to_start` resumes the stream.
+        self.status.fail(device_stopped());
     }
 }
