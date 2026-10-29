@@ -240,6 +240,13 @@ impl AudioBackend for AudioHost {
 
         // double check what was opened (the stream is closed when the handle is dropped)
         let info = stream_handle.info();
+        // if the selected device is gone, rtaudio opens the first device with the same name
+        // instead, even without fallback
+        if info.input_device.as_ref() != input_device.map(|d| &d.id)
+            || info.output_device.as_ref() != output_device.map(|d| &d.id)
+        {
+            return Err(Error::NotFound);
+        }
         if info.in_channels != config.num_input_channels as usize {
             return Err(Error::UnsupportedInputChannels {
                 requested: config.num_input_channels,
