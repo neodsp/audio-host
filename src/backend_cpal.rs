@@ -282,7 +282,12 @@ impl AudioHost {
         let input_stream_config = StreamConfig {
             channels: num_input_channels,
             sample_rate: config.sample_rate,
-            buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+            buffer_size: buffer_size(
+                &input_ranges,
+                num_input_channels,
+                config.sample_rate,
+                config.num_frames,
+            ),
         };
 
         // input-only: run the process callback directly in the input stream
@@ -359,7 +364,12 @@ impl AudioHost {
             let output_stream_config = StreamConfig {
                 channels: num_output_channels,
                 sample_rate: config.sample_rate,
-                buffer_size: cpal::BufferSize::Fixed(config.num_frames as u32),
+                buffer_size: buffer_size(
+                    &output_ranges,
+                    num_output_channels,
+                    config.sample_rate,
+                    config.num_frames,
+                ),
             };
 
             let mut input_block = if has_input {
@@ -494,6 +504,30 @@ fn available_rates(
         .collect()
 }
 
+/// The buffer size to request: `num_frames`, clamped to the range the device supports for this
+/// config. A fixed size outside it makes cpal fail, while `num_frames` is only a request.
+fn buffer_size(
+    ranges: &[SupportedStreamConfigRange],
+    channels: u16,
+    sample_rate: u32,
+    num_frames: usize,
+) -> cpal::BufferSize {
+    let num_frames = u32::try_from(num_frames).unwrap_or(u32::MAX);
+    let supported = ranges
+        .iter()
+        .filter(|r| r.channels() == channels)
+        .filter(|r| r.min_sample_rate() <= sample_rate && sample_rate <= r.max_sample_rate())
+        .find_map(|r| match *r.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } if min <= max => Some((min, max)),
+            _ => None,
+        });
+    match supported {
+        Some((min, max)) => cpal::BufferSize::Fixed(num_frames.clamp(min, max)),
+        // unknown range: request it and let cpal decide
+        None => cpal::BufferSize::Fixed(num_frames),
+    }
+}
+
 fn supports_rate(ranges: &[SupportedStreamConfigRange], sample_rate: u32) -> bool {
     ranges
         .iter()
@@ -588,6 +622,35 @@ mod tests {
         let input = [range(2, 44100, 96000)];
         let output = [range(2, 8000, 48000)];
         assert_eq!(available_rates(&input, 2, &output, 2), vec![44100, 48000]);
+    }
+
+    fn range_with_buffer(channels: u16, min: u32, max: u32) -> SupportedStreamConfigRange {
+        SupportedStreamConfigRange::new(
+            channels,
+            44100,
+            48000,
+            SupportedBufferSize::Range { min, max },
+            SampleFormat::F32,
+        )
+    }
+
+    #[test]
+    fn buffer_size_is_clamped_to_the_supported_range() {
+        let ranges = [
+            range_with_buffer(2, 64, 480),
+            range_with_buffer(4, 1024, 4096),
+        ];
+        let size = |channels, frames| buffer_size(&ranges, channels, 48000, frames);
+        assert_eq!(size(2, 256), cpal::BufferSize::Fixed(256));
+        assert_eq!(size(2, 512), cpal::BufferSize::Fixed(480));
+        assert_eq!(size(2, 16), cpal::BufferSize::Fixed(64));
+        // the range of the matching channel count is used
+        assert_eq!(size(4, 512), cpal::BufferSize::Fixed(1024));
+        // unknown ranges keep the request
+        assert_eq!(
+            buffer_size(&[range(2, 44100, 48000)], 2, 48000, 512),
+            cpal::BufferSize::Fixed(512)
+        );
     }
 
     #[test]
