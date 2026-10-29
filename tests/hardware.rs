@@ -153,10 +153,13 @@ fn too_many_output_channels_reports_a_working_count() {
     };
     assert!(supported > 0 && supported < 1000);
 
-    // the device list reports the same maximum (if the backend knows it)
+    // the listed maximum covers all sample rates, the reported count only this one
     let listed = host.outputs().into_iter().find(|d| d.name == host.output());
     if let Some(num_channels) = listed.and_then(|d| d.num_channels) {
-        assert_eq!(num_channels, supported);
+        assert!(
+            num_channels >= supported,
+            "listed {num_channels}, supported {supported}"
+        );
     }
 
     // retrying with the reported count works
@@ -196,10 +199,13 @@ fn too_many_input_channels_reports_a_working_count() {
     };
     assert!(supported > 0 && supported < 1000);
 
-    // the device list reports the same maximum (if the backend knows it)
+    // the listed maximum covers all sample rates, the reported count only this one
     let listed = host.inputs().into_iter().find(|d| d.name == host.input());
     if let Some(num_channels) = listed.and_then(|d| d.num_channels) {
-        assert_eq!(num_channels, supported);
+        assert!(
+            num_channels >= supported,
+            "listed {num_channels}, supported {supported}"
+        );
     }
 
     let run = run(
