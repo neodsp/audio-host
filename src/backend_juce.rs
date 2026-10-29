@@ -257,7 +257,7 @@ impl AudioBackend for AudioHost {
             ));
         }
 
-        // JUCE silently lowers the channel count and picks the nearest sample rate,
+        // JUCE silently adjusts the channel counts and picks the nearest sample rate,
         // so compare what was opened with what was requested
         let (num_input_channels, num_output_channels, sample_rate, available_rates) = {
             let Some(mut device) = self.device_manager.current_device() else {
@@ -277,12 +277,14 @@ impl AudioBackend for AudioHost {
             )
         };
 
-        let error = if num_input_channels < config.num_input_channels {
+        // channel counts must match exactly: JUCE can also open more channels than requested
+        // (e.g. ALSA raises them to the device's minimum), and the callback would pass them on
+        let error = if num_input_channels != config.num_input_channels {
             Some(Error::UnsupportedInputChannels {
                 requested: config.num_input_channels,
                 supported: num_input_channels,
             })
-        } else if num_output_channels < config.num_output_channels {
+        } else if num_output_channels != config.num_output_channels {
             Some(Error::UnsupportedOutputChannels {
                 requested: config.num_output_channels,
                 supported: num_output_channels,
