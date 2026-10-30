@@ -1,5 +1,20 @@
 # Linux
 
+## System dependencies for `cpal`
+
+### Ubuntu/Debian
+
+```sh
+sudo apt update
+sudo apt install pkg-config libasound2-dev
+```
+
+### Fedora
+
+```sh
+sudo dnf install pkgconf-pkg-config alsa-lib-devel
+```
+
 ## System dependencies for `rtaudio`
 
 ### Ubuntu/Debian
