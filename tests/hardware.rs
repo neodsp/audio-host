@@ -113,11 +113,9 @@ fn input_only_stream_runs() {
         return;
     }
 
-    let config = Config {
-        num_input_channels: 1,
-        num_output_channels: 0,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_input_channels(1)
+        .with_output_channels(0);
     let run = run(&mut host, config).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
     assert_eq!(run.input_channels, 1);
@@ -136,11 +134,9 @@ fn duplex_stream_runs() {
         return;
     }
 
-    let config = Config {
-        num_input_channels: 1,
-        num_output_channels: 2,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_input_channels(1)
+        .with_output_channels(2);
     let run = run(&mut host, config).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
     assert_eq!(run.input_channels, 1);
@@ -157,10 +153,7 @@ fn too_many_output_channels_reports_a_working_count() {
     let _lock = lock_devices();
     let mut host = AudioHost::new().unwrap();
 
-    let config = Config {
-        num_output_channels: 1000,
-        ..Config::default()
-    };
+    let config = Config::default().with_output_channels(1000);
     let supported = match run(&mut host, config.clone()) {
         Err(Error::UnsupportedOutputChannels {
             requested,
@@ -183,14 +176,7 @@ fn too_many_output_channels_reports_a_working_count() {
     }
 
     // retrying with the reported count works
-    let run = run(
-        &mut host,
-        Config {
-            num_output_channels: supported,
-            ..config
-        },
-    )
-    .unwrap();
+    let run = run(&mut host, config.with_output_channels(supported)).unwrap();
     assert_eq!(run.output_channels, supported as usize);
 }
 
@@ -203,10 +189,7 @@ fn too_many_input_channels_reports_a_working_count() {
         return;
     }
 
-    let config = Config {
-        num_input_channels: 1000,
-        ..Config::default()
-    };
+    let config = Config::default().with_input_channels(1000);
     let supported = match run(&mut host, config.clone()) {
         Err(Error::UnsupportedInputChannels {
             requested,
@@ -228,14 +211,7 @@ fn too_many_input_channels_reports_a_working_count() {
         );
     }
 
-    let run = run(
-        &mut host,
-        Config {
-            num_input_channels: supported,
-            ..config
-        },
-    )
-    .unwrap();
+    let run = run(&mut host, config.with_input_channels(supported)).unwrap();
     assert_eq!(run.input_channels, supported as usize);
 }
 
@@ -245,10 +221,7 @@ fn unusual_sample_rate_runs_or_reports_working_rates() {
     let _lock = lock_devices();
     let mut host = AudioHost::new().unwrap();
 
-    let config = Config {
-        sample_rate: 12345,
-        ..Config::default()
-    };
+    let config = Config::default().with_sample_rate(12345);
     match run(&mut host, config.clone()) {
         // some devices resample, then the rate really is supported
         Ok(run) => assert!(run.callbacks > 0),
@@ -260,14 +233,7 @@ fn unusual_sample_rate_runs_or_reports_working_rates() {
             assert!(!available.contains(&12345));
             // retrying with a reported rate works
             if let Some(&rate) = available.first() {
-                run(
-                    &mut host,
-                    Config {
-                        sample_rate: rate,
-                        ..config
-                    },
-                )
-                .unwrap();
+                run(&mut host, config.with_sample_rate(rate)).unwrap();
             }
         }
         Err(other) => panic!("expected Ok or UnsupportedSampleRate, got {other:?}"),

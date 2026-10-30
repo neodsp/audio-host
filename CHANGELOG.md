@@ -18,9 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   machines without an input device.
 - `DeviceInfo::num_channels` is now `Option<u16>` and is the most channels the device can
   open. It is `None` on the juce backend, which can't tell without opening the device.
-- `Error`, `DeviceInfo` and the new `StreamStatus` are `#[non_exhaustive]`, so fields can be
-  added later without a breaking change. `DeviceInfo` can no longer be built with a struct
-  literal outside this crate.
+- `Error`, `DeviceInfo`, `Config` and the new `StreamStatus` are `#[non_exhaustive]`, so
+  fields can be added later without a breaking change. `DeviceInfo` and `Config` can no
+  longer be built with a struct literal outside this crate. Build a `Config` with
+  `Config::default().with_input_channels(2).with_output_channels(2)` and so on, or change
+  its fields on a mutable value.
+- `Config::validate()` (and so `start()`) rejects `num_frames` above the new `MAX_NUM_FRAMES`
+  (32768) with `Error::InvalidConfig`.
 - `AudioBackend` has a new required method, `status()`.
 - `set_api`, `set_input` and `set_output` now prefer an exact name match over the first name
   containing the text.
@@ -32,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Config::with_input_channels`, `with_output_channels`, `with_sample_rate` and
+  `with_num_frames` builder methods.
 - `status()` reports whether the stream is still running, why it stopped on its own
   (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened.
 - The cpal backend now supports input-only streams.
@@ -77,6 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cpal: only f32 configs are considered, as the streams always use f32. Devices without them
   fail with a clear error instead of a generic one.
 - `api()`, `inputs()`, `outputs()`, `input()`, `output()` and `Debug` could panic.
+- cpal: a huge `num_frames` made `start()` panic; rtaudio silently truncated it to 32 bits.
 - rtaudio: a `start()` whose stream fails to start no longer keeps the device open until the
   next `stop()`.
 - cpal: the duplex ring buffer is sized from the buffer sizes the streams actually use, so

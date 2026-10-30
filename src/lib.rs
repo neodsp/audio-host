@@ -87,12 +87,11 @@
 //!     let mut host = AudioHost::new()?;
 //!
 //!     host.start(
-//!         Config {
-//!             num_input_channels: 2,
-//!             num_output_channels: 2,
-//!             sample_rate: 48000,
-//!             num_frames: 1024,
-//!         },
+//!         Config::default()
+//!             .with_input_channels(2)
+//!             .with_output_channels(2)
+//!             .with_sample_rate(48000)
+//!             .with_num_frames(1024),
 //!         move |input, mut output| {
 //!             // Simple pass-through: copy input to output
 //!             output.copy_from_block(&input);
@@ -113,7 +112,8 @@
 //! rate. Otherwise it returns `Error::UnsupportedInputChannels`,
 //! `Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
 //! device supports, so you can retry with a supported config. `num_frames` is only a request:
-//! the process callback can receive blocks of a different size.
+//! the process callback can receive blocks of a different size. It can be at most
+//! `MAX_NUM_FRAMES` (32768).
 //!
 //! ### Monitoring the stream
 //!
@@ -236,12 +236,35 @@ pub struct DeviceInfo {
     pub num_channels: Option<u16>,
 }
 
+/// The largest `num_frames` [`Config::validate`] accepts (about 680 ms at 48 kHz). Devices
+/// support far smaller buffers, and `num_frames` is only a request anyway.
+pub const MAX_NUM_FRAMES: usize = 32768;
+
+/// The stream configuration passed to [`AudioBackend::start`].
+///
+/// Build it from [`Config::default`] with the `with_*` methods, so fields can be added later
+/// without a breaking change:
+///
+/// ```
+/// use audio_host::Config;
+///
+/// let config = Config::default()
+///     .with_input_channels(2)
+///     .with_output_channels(2)
+///     .with_sample_rate(44100)
+///     .with_num_frames(256);
+/// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct Config {
+    /// `0` for an output-only stream.
     pub num_input_channels: u16,
+    /// `0` for an input-only stream.
     pub num_output_channels: u16,
     pub sample_rate: u32,
+    /// The requested block size, at most [`MAX_NUM_FRAMES`]. Only a request: the process
+    /// callback can receive blocks of a different size.
     pub num_frames: usize,
 }
 
@@ -257,6 +280,31 @@ impl Default for Config {
 }
 
 impl Config {
+    #[must_use]
+    pub const fn with_input_channels(mut self, num_input_channels: u16) -> Self {
+        self.num_input_channels = num_input_channels;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_output_channels(mut self, num_output_channels: u16) -> Self {
+        self.num_output_channels = num_output_channels;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_sample_rate(mut self, sample_rate: u32) -> Self {
+        self.sample_rate = sample_rate;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_num_frames(mut self, num_frames: usize) -> Self {
+        self.num_frames = num_frames;
+        self
+    }
+
+    /// Checks the config without opening a device. [`AudioBackend::start`] calls this first.
     pub fn validate(&self) -> Result<(), Error> {
         if self.num_input_channels == 0 && self.num_output_channels == 0 {
             return Err(Error::InvalidConfig(
@@ -268,6 +316,10 @@ impl Config {
         }
         if self.num_frames == 0 {
             return Err(Error::InvalidConfig("num_frames must be > 0"));
+        }
+        if self.num_frames > MAX_NUM_FRAMES {
+            // keep in sync with MAX_NUM_FRAMES (checked by a test)
+            return Err(Error::InvalidConfig("num_frames must be <= 32768"));
         }
         Ok(())
     }
@@ -447,16 +499,12 @@ mod tests {
 
     #[test]
     fn input_only_and_output_only_configs_are_valid() {
-        let input_only = Config {
-            num_input_channels: 1,
-            num_output_channels: 0,
-            ..Config::default()
-        };
-        let output_only = Config {
-            num_input_channels: 0,
-            num_output_channels: 1,
-            ..Config::default()
-        };
+        let input_only = Config::default()
+            .with_input_channels(1)
+            .with_output_channels(0);
+        let output_only = Config::default()
+            .with_input_channels(0)
+            .with_output_channels(1);
         assert!(input_only.validate().is_ok());
         assert!(output_only.validate().is_ok());
     }
@@ -464,19 +512,13 @@ mod tests {
     #[test]
     fn validate_rejects_invalid_configs() {
         let invalid = [
-            Config {
-                num_input_channels: 0,
-                num_output_channels: 0,
-                ..Config::default()
-            },
-            Config {
-                sample_rate: 0,
-                ..Config::default()
-            },
-            Config {
-                num_frames: 0,
-                ..Config::default()
-            },
+            Config::default()
+                .with_input_channels(0)
+                .with_output_channels(0),
+            Config::default().with_sample_rate(0),
+            Config::default().with_num_frames(0),
+            Config::default().with_num_frames(MAX_NUM_FRAMES + 1),
+            Config::default().with_num_frames(usize::MAX),
         ];
         for config in invalid {
             assert!(
@@ -484,6 +526,36 @@ mod tests {
                 "{config:?} should be invalid"
             );
         }
+    }
+
+    #[test]
+    fn validate_accepts_the_largest_num_frames() {
+        let config = Config::default().with_num_frames(MAX_NUM_FRAMES);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn num_frames_error_names_the_limit() {
+        let Err(Error::InvalidConfig(message)) = Config::default()
+            .with_num_frames(MAX_NUM_FRAMES + 1)
+            .validate()
+        else {
+            panic!("expected InvalidConfig");
+        };
+        assert!(message.contains(&MAX_NUM_FRAMES.to_string()), "{message}");
+    }
+
+    #[test]
+    fn builder_sets_every_field() {
+        let config = Config::default()
+            .with_input_channels(3)
+            .with_output_channels(4)
+            .with_sample_rate(44100)
+            .with_num_frames(256);
+        assert_eq!(config.num_input_channels, 3);
+        assert_eq!(config.num_output_channels, 4);
+        assert_eq!(config.sample_rate, 44100);
+        assert_eq!(config.num_frames, 256);
     }
 
     #[test]

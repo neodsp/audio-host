@@ -14,11 +14,9 @@ fn main() -> Result<(), Error> {
     let mismatched = mismatched_blocks.clone();
 
     // start audio host
-    let config = Config {
-        num_input_channels: 2,
-        num_output_channels: 2,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_input_channels(2)
+        .with_output_channels(2);
     host.start(config, move |input, mut output| {
         if output.copy_from_block(&input).is_some() {
             mismatched.fetch_add(1, Ordering::Relaxed);

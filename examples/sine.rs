@@ -27,12 +27,11 @@ fn main() -> Result<(), Error> {
     let mut osc = Oscillator::new(sample_rate, 440.0);
 
     host.start(
-        Config {
-            num_input_channels: 0,
-            num_output_channels: 2,
-            sample_rate,
-            num_frames: 1024,
-        },
+        Config::default()
+            .with_input_channels(0)
+            .with_output_channels(2)
+            .with_sample_rate(sample_rate)
+            .with_num_frames(1024),
         move |_, mut output| {
             for frame in output.frames_mut() {
                 frame.fill(osc.next_sample());

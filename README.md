@@ -89,12 +89,11 @@ fn main() -> Result<(), Error> {
     let mut host = AudioHost::new()?;
 
     host.start(
-        Config {
-            num_input_channels: 2,
-            num_output_channels: 2,
-            sample_rate: 48000,
-            num_frames: 1024,
-        },
+        Config::default()
+            .with_input_channels(2)
+            .with_output_channels(2)
+            .with_sample_rate(48000)
+            .with_num_frames(1024),
         move |input, mut output| {
             // Simple pass-through: copy input to output
             output.copy_from_block(&input);
@@ -115,7 +114,8 @@ If `start` succeeds, the stream runs with exactly the requested channel counts a
 rate. Otherwise it returns `Error::UnsupportedInputChannels`,
 `Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
 device supports, so you can retry with a supported config. `num_frames` is only a request:
-the process callback can receive blocks of a different size.
+the process callback can receive blocks of a different size. It can be at most
+`MAX_NUM_FRAMES` (32768).
 
 ### Monitoring the stream
 
