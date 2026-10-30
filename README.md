@@ -28,14 +28,14 @@ To use the default backend (`rtaudio`):
 
 ```toml
 [dependencies]
-audio-host = "0.1.1"
+audio-host = "0.2.0"
 ```
 
 To use a specific backend (e.g., `cpal`), disable the default features:
 
 ```toml
 [dependencies]
-audio-host = { version = "0.1.1", default-features = false, features = ["cpal"] }
+audio-host = { version = "0.2.0", default-features = false, features = ["cpal"] }
 ```
 
 ## Usage
@@ -59,7 +59,7 @@ fn main() -> Result<(), Error> {
 
 ### Selecting devices
 
-Call `set_api`, `set_input`, or `set_output` with a substring of the desired name before starting the stream. Each returns `Err(Error::NotFound)` if no matching device is found.
+Call `set_api`, `set_input`, or `set_output` with the full name or a part of it before starting the stream. An exact match is preferred, otherwise the first name containing the text is used. Each returns `Err(Error::NotFound)` if no matching device is found.
 
 ```rust
 use audio_host::{AudioHost, Error, AudioBackend, Config};
@@ -89,12 +89,11 @@ fn main() -> Result<(), Error> {
     let mut host = AudioHost::new()?;
 
     host.start(
-        Config {
-            num_input_channels: 2,
-            num_output_channels: 2,
-            sample_rate: 48000,
-            num_frames: 1024,
-        },
+        Config::default()
+            .with_input_channels(2)
+            .with_output_channels(2)
+            .with_sample_rate(48000)
+            .with_num_frames(1024),
         move |input, mut output| {
             // Simple pass-through: copy input to output
             output.copy_from_block(&input);
@@ -110,5 +109,45 @@ fn main() -> Result<(), Error> {
 ```
 
 Set `num_input_channels` or `num_output_channels` to `0` to open an output-only or input-only stream.
+
+If `start` succeeds, the stream runs with exactly the requested channel counts and sample
+rate. Otherwise it returns `Error::UnsupportedInputChannels`,
+`Error::UnsupportedOutputChannels` or `Error::UnsupportedSampleRate` with what the
+device supports, so you can retry with a supported config. `num_frames` is only a request:
+the process callback can receive blocks of a different size. It can be at most
+`MAX_NUM_FRAMES` (32768).
+
+### Monitoring the stream
+
+Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
+is still running, why it stopped on its own (e.g. the device was unplugged) and how many
+dropouts (xruns) happened. Streams aren't restarted automatically: call `start` again or
+pick another device.
+
+```rust
+use audio_host::{AudioBackend, AudioHost, Config, Error};
+
+fn main() -> Result<(), Error> {
+    let mut host = AudioHost::new()?;
+    host.start(Config::default(), |_input, _output| {})?;
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let status = host.status();
+        if !status.running {
+            eprintln!("stream stopped: {:?}", status.error);
+            break;
+        }
+    }
+    Ok(())
+}
+```
+
+### Threads
+
+`AudioHost` is only `Send` on the `cpal` backend: rtaudio and JUCE must stay on the thread
+that created them. For code that works with every backend, create and use the host on one
+thread and talk to it through a channel. The process callback is `Send` on every backend,
+as it runs on the audio thread.
 
 <!-- cargo-rdme end -->
