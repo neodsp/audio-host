@@ -3,12 +3,22 @@ authors = ["Stephan Eckes <stephan@neodsp.com>"]
 categories = ["multimedia::audio"]
 description = "A simple library to play and record audio in real-time"
 edition = "2024"
+include = [
+  "CHANGELOG.md",
+  "LICENSE.*",
+  "LINUX.md",
+  "README.md",
+  "WINDOWS.md",
+  "examples/**",
+  "src/**",
+  "tests/**",
+]
 license = "MIT OR Apache-2.0"
 name = "audio-host"
 readme = "README.md"
 repository = "https://github.com/neodsp/audio-host"
 rust-version = "1.88"
-version = "0.1.1"
+version = "0.2.0"
 
 [dependencies]
 audio-blocks = "0.7.0"
@@ -22,6 +32,12 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 cpal = ["dep:cpal"]
+# extra cpal hosts, chosen at runtime with `set_api`: asio (Windows), jack (Linux, macOS,
+# Windows), pipewire and pulseaudio (Linux). Each does nothing on other platforms.
+cpal-asio = ["cpal", "cpal/asio"]
+cpal-jack = ["cpal", "cpal/jack"]
+cpal-pipewire = ["cpal", "cpal/pipewire"]
+cpal-pulseaudio = ["cpal", "cpal/pulseaudio"]
 default = ["rtaudio"]
 juce = ["dep:cxx-juce"]
 rtaudio = ["dep:rtaudio"]
