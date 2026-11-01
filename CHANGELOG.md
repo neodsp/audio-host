@@ -50,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cpal` and they can be combined. On Linux, cpal picks PipeWire or PulseAudio as the default
   host when it is enabled and running.
 - `status()` reports whether the stream is still running, why it stopped on its own
-  (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened.
+  (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened. On cpal,
+  errors that some hosts survive are only reported if the stream then stops calling back.
 - The cpal backend now supports input-only streams.
 - With the `serde` feature, a `Config` with missing fields deserializes with their default
   values, so configs saved now still load after fields are added.
@@ -59,84 +60,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The unused block in input-only and output-only streams now has 0 channels and 0 frames on
   every backend (cpal and rtaudio passed 1 channel, juce passed the callback's frame count).
-- juce: callbacks with more frames than the device buffer size are split instead of
-  panicking on the audio thread.
-- cpal: when one direction of a duplex stream fails, the other one stops calling
-  `process_fn` and counting xruns.
 - juce: the devices selected with `set_input` / `set_output` were ignored; JUCE always opened
   its default devices.
-- juce: only the devices a stream uses are opened. Output-only streams no longer open the
-  input device (which triggered the microphone permission prompt on macOS).
-- juce: `new()` no longer opens devices, so it no longer fails when a default device is busy.
-- juce: `stop()` now closes the device instead of keeping it open.
+- juce: devices are only opened by `start()` and closed by `stop()`, and only the ones the
+  stream uses. `new()` no longer fails when a default device is busy, and output-only streams
+  no longer trigger the microphone permission prompt on macOS.
 - juce: `new()` returns `Error::Backend` while another `AudioHost` exists, instead of
   panicking (JUCE can only run once per process).
-- cpal: errors whose effect depends on the host (e.g. `BackendError`, which ALSA survives but
-  WASAPI and PulseAudio don't) no longer stop the stream right away. They are reported by
-  `status()` only if the stream then makes no callbacks for one second, and the stream counts
-  as running again if it starts calling back later. Before, a transient error on ALSA silenced
-  a duplex stream for good.
-- Errors reported after a stream already stopped no longer take a lock on the audio thread.
-- cpal: `stop()` failed on ALSA through PipeWire (`snd_pcm_pause`).
-- cpal: duplex streams could pass input and output blocks of different lengths, and the
-  input drifted, when the driver delivered a different block size than `num_frames`.
-- cpal: in duplex streams with more than one input channel, an overrun or underrun of the
-  input ring buffer could shift the input channels against each other until the next one.
-  Only whole frames are buffered now.
+- Fixed panics in `api()`, `inputs()`, `outputs()`, `input()`, `output()` and `Debug`, in
+  cpal's `start()` with a huge `num_frames` (rtaudio silently truncated it to 32 bits), and in
+  juce callbacks with more frames than the device buffer size.
+- cpal: duplex input buffering is reworked. Input and output blocks always have the same
+  length, input channels can no longer shift against each other, the buffer is sized from
+  the buffer sizes the streams actually use, and it returns to its latency target after an
+  xrun or clock drift instead of dropping out on every bit of jitter.
+- cpal: when one direction of a duplex stream fails, the other one stops calling
+  `process_fn`.
 - cpal: underruns no longer print a line per sample from the audio thread; they are counted
   as xruns.
+- cpal: `stop()` failed on ALSA through PipeWire (`snd_pcm_pause`).
+- cpal: `num_frames` outside the device's supported buffer sizes is clamped to the supported
+  range instead of making `start()` fail.
+- cpal: only f32 configs are considered, as the streams always use f32. Devices without them
+  fail with a clear error instead of a generic one.
 - cpal: `DeviceInfo::num_channels` reported the default config's channel count instead of the
   maximum, and devices whose default config couldn't be read were missing from the lists.
+- cpal, rtaudio: a `start()` that fails no longer leaves a stream capturing or a device open.
 - rtaudio: a selected device that can't be found no longer silently falls back to the default
   device or to another device with the same name.
 - rtaudio: `set_api` no longer switches the API when the new one can't be opened.
-- cpal: a duplex `start()` whose output fails no longer leaves the input stream capturing.
-- cpal: `num_frames` outside the device's supported buffer sizes no longer makes `start()`
-  fail; it is clamped to the supported range.
-- cpal: only f32 configs are considered, as the streams always use f32. Devices without them
-  fail with a clear error instead of a generic one.
-- `api()`, `inputs()`, `outputs()`, `input()`, `output()` and `Debug` could panic.
-- cpal: a huge `num_frames` made `start()` panic; rtaudio silently truncated it to 32 bits.
-- rtaudio: a `start()` whose stream fails to start no longer keeps the device open until the
-  next `stop()`.
-- cpal: the duplex ring buffer is sized from the buffer sizes the streams actually use, so
-  devices whose minimum buffer size is above `num_frames` no longer overrun it.
-- `Debug` for `AudioHost` no longer lists every device (slow, and it touched the devices); it
-  shows the current API, input and output.
 - `start()` with an invalid config no longer stops the running stream.
-- cpal: the duplex input buffer returns to its latency target after an xrun or clock drift.
-  Before, one underrun left it empty, so every bit of jitter caused another dropout, and
-  input that ran ahead kept a larger latency for good.
-- cpal: when a stall stopped a duplex stream and the other direction died in the meantime, the
-  stream was reported as running again once the stall cleared.
-- `Debug` for `AudioHost` showed `is_running: true` after a stream had stopped on its own.
-- cpal: input-only streams no longer call `process_fn` after the stream stopped on its own,
-  like duplex streams.
+- `Debug` for `AudioHost` shows the current API, input and output instead of listing every
+  device (slow, and it touched the devices).
 
 ### Documentation
 
-- `LINUX.md` lists the JACK development package the juce backend needs, and the packages the
-  `cpal-jack` and `cpal-pipewire` features need.
 - New `WINDOWS.md` explains how to build and use ASIO with the `cpal-asio` feature.
-- Documented strict configs, monitoring the stream with `status()` and how device names are
-  matched.
-- Doc examples that open audio devices no longer run during `cargo test`.
-- The `feedback` example no longer prints from the audio callback and uses `?` instead of
-  `unwrap()`.
-- Documented that `AudioHost` is only `Send` on the cpal backend. A compile-time check keeps
-  it that way.
-- rtaudio: documented that `status()` relies on rtaudio's process-wide error callback.
-- Documented that some backends resume a stream when its device recovers.
-- cpal: documented that devices without 32-bit float support can't be used.
-- The `sine` example uses `?` instead of `unwrap()`.
+  `LINUX.md` lists the packages the juce backend and the `cpal-jack` and `cpal-pipewire`
+  features need.
+- Documented strict configs, monitoring the stream with `status()`, how device names are
+  matched, and that `AudioHost` is only `Send` on the cpal backend.
 
 ### Internal
 
 - Replaced the hardware test with unit tests and manual hardware tests (`#[ignore]`d, run them
-  with `cargo test --test hardware -- --ignored`).
-- CI now runs `cargo test` for every backend.
-- The published package only contains the sources, examples, tests, docs and licenses (no CI
-  or tooling config).
+  with `cargo test --test hardware -- --ignored`). CI runs `cargo test` for every backend.
+- The published package only contains the sources, examples, tests, docs and licenses.
 
 ## [0.1.1] - 2026-10-19
 
