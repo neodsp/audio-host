@@ -431,6 +431,12 @@ fn process_output(
     // so input and output blocks always have the same length and never exceed `num_frames`
     // (no allocation needed)
     for chunk in data.chunks_mut(max_chunk_samples) {
+        // the other stream can fail during a split callback: silence the rest, like a stopped
+        // stream's callback
+        if !status.is_running() {
+            chunk.fill(0.0);
+            continue;
+        }
         if let Some(fifo) = &mut input_fifo {
             let num_frames = chunk.len() / num_output_channels as usize;
             input_block.set_num_frames_visible(num_frames);
@@ -991,6 +997,33 @@ mod tests {
         push_frames(&mut producer, &[1.0, -1.0], 2);
         assert!(fifo.trim(2));
         assert_eq!(fifo.consumer.slots(), 6);
+    }
+
+    #[test]
+    fn a_split_callback_stops_when_the_stream_fails() {
+        // the input fails while the first of two chunks is processed
+        let (_producer, mut fifo) = stereo_fifo(0, 4, 32);
+        let mut input_block = Interleaved::new(2, 1);
+        let status = StatusTracker::default();
+        status.set_running(true);
+        let mut calls = 0;
+        let mut data = [9.0; 4];
+        process_output(
+            &mut data,
+            2,
+            2,
+            Some(&mut fifo),
+            &mut input_block,
+            &status,
+            &mut |_input: Block, mut output: BlockMut| {
+                calls += 1;
+                output.raw_data_mut().fill(0.5);
+                status.fail(StreamError::DeviceLost);
+            },
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(data, [0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(status.status().xruns, 1, "only the first chunk's underrun");
     }
 
     #[test]
