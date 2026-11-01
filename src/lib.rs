@@ -275,6 +275,17 @@ pub struct DeviceInfo {
     pub num_channels: Option<u16>,
 }
 
+impl DeviceInfo {
+    /// For backends outside this crate (and mocks), which can't build the struct directly
+    /// because it is `#[non_exhaustive]`.
+    pub fn new(name: impl Into<String>, num_channels: Option<u16>) -> Self {
+        Self {
+            name: name.into(),
+            num_channels,
+        }
+    }
+}
+
 /// The largest `num_frames` [`Config::validate`] accepts (about 680 ms at 48 kHz). Devices
 /// support far smaller buffers, and `num_frames` is only a request anyway.
 pub const MAX_NUM_FRAMES: usize = 32768;
@@ -420,6 +431,9 @@ pub(crate) struct StatusTracker {
     running: AtomicBool,
     xruns: AtomicU64,
     error: Mutex<Option<StreamError>>,
+    /// A stream died for good (see [`StatusTracker::fail_terminal`]), so the status must not be
+    /// resumed until the next `start`. Only changes under the `error` lock.
+    terminal: AtomicBool,
 }
 
 #[allow(dead_code)] // not every backend reports everything (e.g. JUCE has no xruns)
@@ -429,6 +443,7 @@ impl StatusTracker {
         let mut error = self.error.lock().unwrap_or_else(|e| e.into_inner());
         self.running.store(false, Ordering::Relaxed);
         self.xruns.store(0, Ordering::Relaxed);
+        self.terminal.store(false, Ordering::Relaxed);
         *error = None;
     }
 
@@ -462,11 +477,30 @@ impl StatusTracker {
         }
     }
 
+    /// Like [`StatusTracker::fail`], for a stream that is gone and has to be rebuilt. Also
+    /// counts while the status is stopped: if another stream's recoverable error stopped it,
+    /// [`StatusTracker::resume_after`] no longer resumes it. The first error is still the one
+    /// reported. `error` is only called if the error is stored, so repeated errors don't
+    /// allocate. Takes the lock once per stream at most, so it's fine on the audio thread.
+    pub(crate) fn fail_terminal(&self, error: impl FnOnce() -> StreamError) {
+        if self.terminal.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
+        if self.terminal.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if self.running.swap(false, Ordering::Relaxed) && current.is_none() {
+            *current = Some(error());
+        }
+    }
+
     /// Marks the stream as running again if it was stopped by `error`, e.g. when the backend
-    /// restarted the device on its own. Does nothing after `stop` or other errors.
+    /// restarted the device on its own. Does nothing after `stop`, other errors, or
+    /// [`StatusTracker::fail_terminal`].
     pub(crate) fn resume_after(&self, error: &StreamError) {
         let mut current = self.error.lock().unwrap_or_else(|e| e.into_inner());
-        if current.as_ref() == Some(error) {
+        if !self.terminal.load(Ordering::Relaxed) && current.as_ref() == Some(error) {
             *current = None;
             self.running.store(true, Ordering::Relaxed);
         }
@@ -710,6 +744,34 @@ mod tests {
                 status.fail(StreamError::DeviceLost);
             });
         }
+    }
+
+    #[test]
+    fn a_terminal_error_blocks_resuming() {
+        let stopped = StreamError::Backend("stopped".into());
+        let status = StatusTracker::default();
+
+        // running: stops it like `fail`
+        status.set_running(true);
+        status.fail_terminal(|| StreamError::DeviceLost);
+        assert_eq!(status.status().error, Some(StreamError::DeviceLost));
+        assert!(!status.status().running);
+
+        // stopped by a recoverable error first: keeps that error, but no longer resumes
+        status.reset();
+        status.set_running(true);
+        status.fail(stopped.clone());
+        status.fail_terminal(|| panic!("the first error is kept"));
+        status.resume_after(&stopped);
+        assert_eq!(status.status().error, Some(stopped.clone()));
+        assert!(!status.status().running);
+
+        // cleared by the next start
+        status.reset();
+        status.set_running(true);
+        status.fail(stopped.clone());
+        status.resume_after(&stopped);
+        assert!(status.status().running);
     }
 
     #[test]

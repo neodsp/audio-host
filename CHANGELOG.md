@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open. It is `None` on the juce backend, which can't tell without opening the device.
 - `Error`, `DeviceInfo`, `Config` and the new `StreamStatus` are `#[non_exhaustive]`, so
   fields can be added later without a breaking change. `DeviceInfo` and `Config` can no
-  longer be built with a struct literal outside this crate. Build a `Config` with
+  longer be built with a struct literal outside this crate. Build a `DeviceInfo` with the new
+  `DeviceInfo::new(name, num_channels)`, and a `Config` with
   `Config::default().with_input_channels(2).with_output_channels(2)` and so on, or change
   its fields on a mutable value.
 - `Config::validate()` (and so `start()`) rejects `num_frames` above the new `MAX_NUM_FRAMES`

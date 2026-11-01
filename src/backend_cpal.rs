@@ -561,12 +561,12 @@ fn error_handler(
             cpal::ErrorKind::DeviceChanged
             | cpal::ErrorKind::ResourceExhausted
             | cpal::ErrorKind::RealtimeDenied => {}
-            // the stream is gone and has to be rebuilt, on every host
-            cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
+            // the stream is gone and has to be rebuilt, on every host. Counts even while the
+            // status is stopped: another stream's stall may be what stopped it, and the
+            // watchdog must not resume it once that one recovers.
+            cpal::ErrorKind::DeviceNotAvailable => status.fail_terminal(|| StreamError::DeviceLost),
             cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::HostUnavailable => {
-                if running {
-                    status.fail(StreamError::Backend(error.to_string()));
-                }
+                status.fail_terminal(|| StreamError::Backend(error.to_string()))
             }
             // whether the stream survives these depends on the host (ALSA keeps it running
             // after a `BackendError`, WASAPI and PulseAudio don't), so they only count if it
@@ -1330,30 +1330,49 @@ mod tests {
 
     #[test]
     fn a_stream_that_dies_while_another_one_stalls_is_still_caught() {
-        let status = Arc::new(StatusTracker::default());
-        status.set_running(true);
-        let input = Arc::new(Watchdog::new());
-        let output = Arc::new(Watchdog::new());
-        let now = input.epoch;
-        input.callback();
-        output.callback();
+        for kind in [
+            cpal::ErrorKind::BackendError,
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::HostUnavailable,
+        ] {
+            let status = Arc::new(StatusTracker::default());
+            status.set_running(true);
+            let input = Arc::new(Watchdog::new());
+            let output = Arc::new(Watchdog::new());
+            let now = input.epoch;
+            input.callback();
+            output.callback();
 
-        // duplex: the input stalls and stops the status
-        input.error(Some(backend_error()), now);
-        input.check_at(&status, now + STALL_TIMEOUT);
-        assert!(!status.status().running);
+            // duplex: the input stalls and stops the status
+            input.error(Some(backend_error()), now);
+            input.check_at(&status, now + STALL_TIMEOUT);
+            assert!(!status.status().running, "{kind:?}");
 
-        // the output dies while the status is stopped
-        error_handler(&status, &output)(cpal::Error::new(cpal::ErrorKind::BackendError));
+            // the output dies while the status is stopped
+            error_handler(&status, &output)(cpal::Error::new(kind));
 
-        // the input recovers and resumes the status, but the output is still dead
-        input.callback();
-        let later = now + STALL_TIMEOUT * 3;
-        input.check_at(&status, later);
-        output.check_at(&status, later);
-        let current = status.status();
-        assert!(!current.running, "{current:?}");
-        assert!(matches!(current.error, Some(StreamError::Backend(_))));
+            // the input recovers, but the output is still dead, so the status stays stopped
+            input.callback();
+            let later = now + STALL_TIMEOUT * 3;
+            input.check_at(&status, later);
+            output.check_at(&status, later);
+            let current = status.status();
+            assert!(!current.running, "{kind:?}: {current:?}");
+            assert!(
+                matches!(current.error, Some(StreamError::Backend(_))),
+                "{kind:?}: {current:?}"
+            );
+
+            // the next start clears it
+            status.reset();
+            status.set_running(true);
+            input.error(Some(backend_error()), later);
+            input.check_at(&status, later + STALL_TIMEOUT);
+            input.callback();
+            input.check_at(&status, later + STALL_TIMEOUT * 2);
+            assert!(status.status().running, "{kind:?}");
+        }
     }
 
     #[test]
