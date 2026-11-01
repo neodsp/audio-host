@@ -46,6 +46,10 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 /// For some errors cpal doesn't say whether the stream stopped (it depends on the host), so
 /// [`status`](AudioBackend::status) only reports them once the stream stops calling back for
 /// one second. A background thread checks this while a stream runs.
+///
+/// The streams always use 32-bit float samples, and cpal doesn't convert sample formats.
+/// Devices that only support integer formats (e.g. some raw ALSA `hw:` devices) make `start`
+/// fail with [`Error::Backend`].
 pub struct AudioHost {
     host: cpal::Host,
     host_id: cpal::HostId,
@@ -62,10 +66,7 @@ impl Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioHost")
             .field("backend", &"CPAL")
-            .field(
-                "is_running",
-                &(self.output_stream.is_some() || self.input_stream.is_some()),
-            )
+            .field("is_running", &self.status.is_running())
             // only the current selection: listing every device is slow and opens them
             .field("api", &self.api())
             .field("input", &self.input())
@@ -180,8 +181,9 @@ impl AudioBackend for AudioHost {
         config: Config,
         process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), Error> {
-        self.stop()?;
+        // before stopping, so an invalid config leaves a running stream alone
         config.validate()?;
+        self.stop()?;
         self.status.reset();
 
         // running before the streams start, so errors they report right away aren't ignored.
@@ -320,7 +322,7 @@ impl AudioHost {
         // through a ring buffer
         let output_stream_config = stream_config(&output_ranges, num_output_channels, &config);
 
-        let (mut producer, mut consumer) = if has_input {
+        let (mut producer, mut input_fifo) = if has_input {
             let latency_samples = (DUPLEX_LATENCY_MS as usize * config.sample_rate as usize / 1000)
                 * num_input_channels as usize;
             // the buffer sizes can be clamped above `num_frames`, so size the headroom from the
@@ -336,7 +338,13 @@ impl AudioHost {
             for _ in 0..latency_samples {
                 let _ = producer.push(0.0);
             }
-            (Some(producer), Some(consumer))
+            let fifo = InputFifo::new(
+                consumer,
+                num_input_channels,
+                latency_samples,
+                latency_samples + 5 * input_block_size,
+            );
+            (Some(producer), Some(fifo))
         } else {
             (None, None)
         };
@@ -401,14 +409,14 @@ impl AudioHost {
                         // callbacks are split, so input and output blocks always have the same
                         // length and never exceed `num_frames` (no allocation needed)
                         for chunk in data.chunks_mut(max_chunk_samples) {
-                            if let Some(ref mut consumer) = consumer {
+                            if let Some(ref mut input_fifo) = input_fifo {
                                 let num_frames = chunk.len() / num_output_channels as usize;
                                 input_block.set_num_frames_visible(num_frames);
                                 // all input channels are visible, so the visible frames are
                                 // the start of the raw data
                                 let samples = num_frames * num_input_channels as usize;
                                 let input = &mut input_block.raw_data_mut()[..samples];
-                                if !pop_frames(consumer, input, num_input_channels) {
+                                if !input_fifo.read(input) {
                                     output_status.add_xrun();
                                 }
                             }
@@ -449,6 +457,67 @@ fn push_frames(producer: &mut rtrb::Producer<f32>, data: &[f32], num_channels: u
     pushed.len() == data.len()
 }
 
+/// The output side of the duplex ring buffer. It keeps the input about `target` samples
+/// behind, so timing differences between the streams don't cause dropouts.
+///
+/// The level drifts when the two devices' clocks differ, and an xrun can empty or fill it.
+/// Without correction one hiccup would leave it at the edge for good (dropouts on every bit of
+/// jitter, or a permanently larger latency), so it is brought back to `target`:
+/// - after an underrun, the input stays silent until the buffer has refilled to `target`
+/// - above `max`, the oldest input is dropped down to `target`
+struct InputFifo {
+    consumer: rtrb::Consumer<f32>,
+    num_channels: u16,
+    /// The level to keep, in samples (whole frames).
+    target: usize,
+    /// Above this level the input is trimmed back to `target`.
+    max: usize,
+    /// Refilling after an underrun.
+    refilling: bool,
+}
+
+impl InputFifo {
+    fn new(consumer: rtrb::Consumer<f32>, num_channels: u16, target: usize, max: usize) -> Self {
+        Self {
+            consumer,
+            num_channels,
+            target,
+            max,
+            refilling: false,
+        }
+    }
+
+    /// Fills `out` with the next input frames (or silence while refilling). Returns `false`
+    /// on an xrun: an underrun, or input dropped because it ran too far ahead. Real-time safe.
+    fn read(&mut self, out: &mut [f32]) -> bool {
+        let num_channels = self.num_channels as usize;
+        // only grows while the producer runs
+        let available = self.consumer.slots();
+        if self.refilling {
+            if available < self.target {
+                out.fill(0.0);
+                // counted once, when the underrun happened
+                return true;
+            }
+            self.refilling = false;
+        }
+
+        let mut ok = true;
+        if available > self.max {
+            let excess = (available - self.target) / num_channels * num_channels;
+            if let Ok(chunk) = self.consumer.read_chunk(excess) {
+                chunk.commit_all();
+            }
+            ok = false;
+        }
+        if !pop_frames(&mut self.consumer, out, self.num_channels) {
+            self.refilling = true;
+            ok = false;
+        }
+        ok
+    }
+}
+
 /// Fills `out` with whole frames from the ring buffer and the rest with silence.
 /// Returns `false` if there weren't enough frames.
 ///
@@ -470,24 +539,35 @@ fn error_handler(
 ) -> impl FnMut(cpal::Error) + Send + 'static {
     let status = status.clone();
     let watchdog = watchdog.clone();
-    move |error| match error.kind() {
-        // already stopped: don't format the message, which allocates on the audio thread on
-        // some hosts (e.g. ALSA reporting the same error on every loop)
-        _ if !status.is_running() => {}
-        cpal::ErrorKind::Xrun => status.add_xrun(),
-        // the stream keeps running in these cases (RealtimeDenied: audio plays without
-        // real-time priority)
-        cpal::ErrorKind::DeviceChanged
-        | cpal::ErrorKind::ResourceExhausted
-        | cpal::ErrorKind::RealtimeDenied => {}
-        // the stream is gone and has to be rebuilt, on every host
-        cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
-        cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::HostUnavailable => {
-            status.fail(StreamError::Backend(error.to_string()))
+    move |error| {
+        // once stopped, messages aren't formatted, which allocates on the audio thread on some
+        // hosts (e.g. ALSA reporting the same error on every loop)
+        let running = status.is_running();
+        match error.kind() {
+            cpal::ErrorKind::Xrun if running => status.add_xrun(),
+            cpal::ErrorKind::Xrun => {}
+            // the stream keeps running in these cases (RealtimeDenied: audio plays without
+            // real-time priority)
+            cpal::ErrorKind::DeviceChanged
+            | cpal::ErrorKind::ResourceExhausted
+            | cpal::ErrorKind::RealtimeDenied => {}
+            // the stream is gone and has to be rebuilt, on every host
+            cpal::ErrorKind::DeviceNotAvailable => status.fail(StreamError::DeviceLost),
+            cpal::ErrorKind::StreamInvalidated | cpal::ErrorKind::HostUnavailable => {
+                if running {
+                    status.fail(StreamError::Backend(error.to_string()));
+                }
+            }
+            // whether the stream survives these depends on the host (ALSA keeps it running
+            // after a `BackendError`, WASAPI and PulseAudio don't), so they only count if it
+            // stops. The watchdog hears about them even while the status is stopped: another
+            // stream's stall may be what stopped it, and once that one recovers, this stream
+            // must still be caught if it died in the meantime.
+            _ => watchdog.error(
+                running.then(|| StreamError::Backend(error.to_string())),
+                Instant::now(),
+            ),
         }
-        // whether the stream survives these depends on the host (ALSA keeps it running after
-        // a `BackendError`, WASAPI and PulseAudio don't), so they only count if it stops
-        _ => watchdog.error(StreamError::Backend(error.to_string()), Instant::now()),
     }
 }
 
@@ -529,15 +609,16 @@ impl Watchdog {
 
     /// An ambiguous error arrived. Repeated errors without callbacks in between don't restart
     /// the timeout, so a stream that keeps failing is still caught. The first error of a stall
-    /// is the one reported, like in [`StatusTracker::fail`].
-    fn error(&self, error: StreamError, now: Instant) {
+    /// is the one reported, like in [`StatusTracker::fail`]. `None` if the message wasn't
+    /// formatted (the status was stopped): a generic one is reported then.
+    fn error(&self, error: Option<StreamError>, now: Instant) {
         let callbacks = self.callbacks.load(Ordering::Relaxed);
         let new_stall = self.callbacks_at_error.load(Ordering::Acquire) != callbacks;
         if let Ok(mut current) = self.error.try_lock()
             // a repeated error only fills in if the first one missed the lock
             && (new_stall || current.is_none())
         {
-            *current = Some(error);
+            *current = error;
         }
         if new_stall {
             self.stalled_since_ms
@@ -968,6 +1049,64 @@ mod tests {
         });
     }
 
+    /// A stereo fifo prefilled to its target, like in `open_streams`.
+    fn stereo_fifo(target: usize, max: usize, capacity: usize) -> (rtrb::Producer<f32>, InputFifo) {
+        let (mut producer, consumer) = RingBuffer::<f32>::new(capacity);
+        for _ in 0..target {
+            producer.push(0.0).unwrap();
+        }
+        (producer, InputFifo::new(consumer, 2, target, max))
+    }
+
+    #[test]
+    fn fifo_refills_to_its_target_after_an_underrun() {
+        let (mut producer, mut fifo) = stereo_fifo(8, 16, 32);
+        let mut out = [9.0; 4];
+        // the output pulls faster than the input delivers: the level drops to 0
+        assert!(fifo.read(&mut out));
+        assert!(fifo.read(&mut out));
+        assert!(!fifo.read(&mut out), "underrun");
+
+        // silent until the level is back at the target, without counting more xruns
+        push_frames(&mut producer, &[1.0, -1.0, 2.0, -2.0], 2);
+        assert!(fifo.read(&mut out));
+        assert_eq!(out, [0.0; 4]);
+        assert_eq!(fifo.consumer.slots(), 4, "nothing read while refilling");
+
+        // back at the target: the input plays again, 8 samples behind
+        push_frames(&mut producer, &[3.0, -3.0, 4.0, -4.0], 2);
+        assert!(fifo.read(&mut out));
+        assert_eq!(out, [1.0, -1.0, 2.0, -2.0]);
+        assert_eq!(fifo.consumer.slots(), 4);
+    }
+
+    #[test]
+    fn fifo_trims_input_that_runs_too_far_ahead() {
+        let (mut producer, mut fifo) = stereo_fifo(4, 8, 32);
+        // the input delivers faster than the output pulls: the level grows past `max`
+        push_frames(&mut producer, &[1.0, -1.0, 2.0, -2.0, 3.0, -3.0], 2);
+        let mut out = [9.0; 2];
+        assert!(!fifo.read(&mut out), "trimming drops input");
+        // the oldest input is dropped down to the target, then a frame is read
+        assert_eq!(out, [2.0, -2.0]);
+        assert_eq!(fifo.consumer.slots(), 2);
+        assert!(fifo.read(&mut out));
+        assert_eq!(out, [3.0, -3.0]);
+    }
+
+    #[test]
+    fn fifo_keeps_a_steady_stream_without_xruns() {
+        // input and output blocks of different sizes at the same rate (same clock)
+        let (mut producer, mut fifo) = stereo_fifo(256, 256 + 5 * 128, 256 + 10 * 128);
+        let input = [0.5; 2 * 64];
+        let mut out = [0.0; 2 * 128];
+        for _ in 0..1000 {
+            assert!(push_frames(&mut producer, &input, 2));
+            assert!(push_frames(&mut producer, &input, 2));
+            assert!(fifo.read(&mut out));
+        }
+    }
+
     /// Feeds `kind` to the error handler of a running stream and returns the status after.
     fn status_after(kind: cpal::ErrorKind) -> StreamStatus {
         let status = Arc::new(StatusTracker::default());
@@ -1004,7 +1143,7 @@ mod tests {
     #[test]
     fn watchdog_ignores_errors_the_stream_survives() {
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         // the stream kept calling back, e.g. ALSA after a transient error
         watchdog.callback();
         watchdog.check_at(&status, now + STALL_TIMEOUT * 5);
@@ -1014,7 +1153,7 @@ mod tests {
     #[test]
     fn watchdog_fails_a_stream_that_stops_after_an_error() {
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
 
         watchdog.check_at(&status, now + STALL_TIMEOUT / 2);
         assert!(status.status().running, "too early");
@@ -1033,7 +1172,7 @@ mod tests {
     #[test]
     fn watchdog_resumes_a_stream_that_calls_back_again() {
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         assert!(!status.status().running);
 
@@ -1053,7 +1192,7 @@ mod tests {
     fn watchdog_doesnt_resume_a_stream_stopped_by_something_else() {
         let (status, watchdog, now) = watched(3);
         status.fail(StreamError::DeviceLost);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         watchdog.callback();
         watchdog.check_at(&status, now + STALL_TIMEOUT * 2);
@@ -1062,7 +1201,7 @@ mod tests {
 
         // stopped by the stall, then the status was reset (e.g. by a restart)
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         status.reset();
         watchdog.callback();
@@ -1074,7 +1213,7 @@ mod tests {
     fn watchdog_fails_a_stalled_stream_whose_error_missed_the_lock() {
         let (status, watchdog, now) = watched(3);
         let held = watchdog.error.lock().unwrap();
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         drop(held);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         let status = status.status();
@@ -1085,7 +1224,7 @@ mod tests {
     #[test]
     fn watchdog_fails_a_stream_that_never_called_back() {
         let (status, watchdog, now) = watched(0);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         assert!(!status.status().running);
     }
@@ -1094,8 +1233,8 @@ mod tests {
     fn repeated_errors_dont_restart_the_timeout() {
         // e.g. ALSA reporting the same error on every loop of a broken stream
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
-        watchdog.error(backend_error(), now + STALL_TIMEOUT / 2);
+        watchdog.error(Some(backend_error()), now);
+        watchdog.error(Some(backend_error()), now + STALL_TIMEOUT / 2);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         assert!(!status.status().running);
     }
@@ -1103,8 +1242,8 @@ mod tests {
     #[test]
     fn the_first_error_of_a_stall_is_reported() {
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
-        watchdog.error(StreamError::Backend("later".into()), now);
+        watchdog.error(Some(backend_error()), now);
+        watchdog.error(Some(StreamError::Backend("later".into())), now);
         watchdog.check_at(&status, now + STALL_TIMEOUT);
         assert_eq!(status.status().error, Some(backend_error()));
     }
@@ -1112,10 +1251,10 @@ mod tests {
     #[test]
     fn a_new_error_after_recovering_restarts_the_timeout() {
         let (status, watchdog, now) = watched(3);
-        watchdog.error(backend_error(), now);
+        watchdog.error(Some(backend_error()), now);
         watchdog.callback();
         let later = now + STALL_TIMEOUT * 2;
-        watchdog.error(backend_error(), later);
+        watchdog.error(Some(backend_error()), later);
         watchdog.check_at(&status, later + STALL_TIMEOUT / 2);
         assert!(status.status().running);
         watchdog.check_at(&status, later + STALL_TIMEOUT);
@@ -1127,7 +1266,7 @@ mod tests {
         let status = Arc::new(StatusTracker::default());
         status.set_running(true);
         let watchdog = Arc::new(Watchdog::new());
-        watchdog.error(backend_error(), Instant::now());
+        watchdog.error(Some(backend_error()), Instant::now());
         let monitor = Monitor::spawn(status.clone(), vec![watchdog]).unwrap();
 
         let deadline = Instant::now() + STALL_TIMEOUT * 5;
@@ -1175,7 +1314,36 @@ mod tests {
             handler(cpal::Error::new(kind));
         }
         assert_eq!(status.status(), StreamStatus::default());
-        assert!(!watchdog.stalling());
+        // still noted, so the stall is caught if another stream's recovery resumes the status
+        assert!(watchdog.stalling());
+    }
+
+    #[test]
+    fn a_stream_that_dies_while_another_one_stalls_is_still_caught() {
+        let status = Arc::new(StatusTracker::default());
+        status.set_running(true);
+        let input = Arc::new(Watchdog::new());
+        let output = Arc::new(Watchdog::new());
+        let now = input.epoch;
+        input.callback();
+        output.callback();
+
+        // duplex: the input stalls and stops the status
+        input.error(Some(backend_error()), now);
+        input.check_at(&status, now + STALL_TIMEOUT);
+        assert!(!status.status().running);
+
+        // the output dies while the status is stopped
+        error_handler(&status, &output)(cpal::Error::new(cpal::ErrorKind::BackendError));
+
+        // the input recovers and resumes the status, but the output is still dead
+        input.callback();
+        let later = now + STALL_TIMEOUT * 3;
+        input.check_at(&status, later);
+        output.check_at(&status, later);
+        let current = status.status();
+        assert!(!current.running, "{current:?}");
+        assert!(matches!(current.error, Some(StreamError::Backend(_))));
     }
 
     #[test]

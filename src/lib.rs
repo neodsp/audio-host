@@ -119,8 +119,10 @@
 //!
 //! Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
 //! is still running, why it stopped on its own (e.g. the device was unplugged) and how many
-//! dropouts (xruns) happened. Streams aren't restarted automatically: call `start` again or
-//! pick another device.
+//! dropouts (xruns) happened. This library doesn't restart streams, but some backends resume
+//! one when its device recovers (cpal when a stalled stream calls back again, JUCE when it
+//! restarts the device itself). `running` is then `true` again and the error is cleared.
+//! Otherwise call `start` again or pick another device.
 //!
 //! ```rust,no_run
 //! use audio_host::{AudioBackend, AudioHost, Config, Error};
@@ -190,17 +192,24 @@ pub enum Error {
     /// `available` lists the sample rates they support (may be empty if unknown).
     #[error("Sample rate {requested} Hz is not supported, available: {available:?}")]
     UnsupportedSampleRate { requested: u32, available: Vec<u32> },
+    /// The backend failed. The message includes the backend's error, which isn't also
+    /// returned by `source()`, so error reports don't print it twice. Match on the variant to
+    /// inspect or downcast it.
     #[error("Backend error: {0}")]
-    Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Backend(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Finds the item whose name matches `query`: an exact match wins, otherwise the first name
-/// that contains `query`. Items without a name are skipped.
+/// that contains `query`. Items without a name are skipped. An empty `query` matches nothing,
+/// instead of every name.
 pub(crate) fn find_by_name<T>(
     items: impl IntoIterator<Item = T>,
     name: impl Fn(&T) -> Option<String>,
     query: &str,
 ) -> Option<T> {
+    if query.is_empty() {
+        return None;
+    }
     let mut partial = None;
     for item in items {
         match name(&item) {
@@ -256,6 +265,8 @@ pub const MAX_NUM_FRAMES: usize = 32768;
 /// ```
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+// missing fields take their default, so configs saved before a field was added still load
+#[cfg_attr(feature = "serde", serde(default))]
 #[non_exhaustive]
 pub struct Config {
     /// `0` for an output-only stream.
@@ -342,8 +353,10 @@ pub enum StreamError {
 #[non_exhaustive]
 pub struct StreamStatus {
     /// The stream was started and hasn't been stopped by [`AudioBackend::stop`] or an error.
+    /// Some backends resume a stream when its device recovers, which sets this back to `true`.
     pub running: bool,
-    /// Why the stream stopped on its own, if it did. Cleared by the next `start`.
+    /// Why the stream stopped on its own, if it did. Cleared by the next `start`, or when the
+    /// backend resumes the stream.
     pub error: Option<StreamError>,
     /// Dropouts since `start`: callbacks where audio was lost or replaced by silence
     /// because the system couldn't keep up. Always `0` on JUCE, which doesn't report them.
@@ -480,7 +493,8 @@ pub trait AudioBackend {
 
     /// The state of the stream: whether it is still running, why it stopped on its own (e.g.
     /// the device was unplugged) and how many dropouts happened. Poll this from your own
-    /// thread, e.g. once per UI frame. Streams aren't restarted automatically.
+    /// thread, e.g. once per UI frame. The library doesn't restart streams, but some backends
+    /// resume one when its device recovers.
     fn status(&self) -> StreamStatus;
 }
 
@@ -566,6 +580,8 @@ mod tests {
         assert_eq!(find("Speak"), Some("USB Speakers"));
         assert_eq!(find("(2)"), Some("Speakers (2)"));
         assert_eq!(find("Headphones"), None);
+        // would be contained in every name
+        assert_eq!(find(""), None);
     }
 
     #[test]
@@ -654,6 +670,14 @@ mod tests {
         let status = StatusTracker::default();
         status.fail(StreamError::DeviceLost);
         assert_eq!(status.status().error, None);
+    }
+
+    #[test]
+    fn backend_error_message_is_printed_once() {
+        let error = Error::Backend("device busy".into());
+        assert_eq!(error.to_string(), "Backend error: device busy");
+        // reporters that walk the source chain would print it again otherwise
+        assert!(std::error::Error::source(&error).is_none());
     }
 
     #[test]

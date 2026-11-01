@@ -28,7 +28,6 @@ fn main() -> Result<(), Error> {
 
     host.start(
         Config::default()
-            .with_input_channels(0)
             .with_output_channels(2)
             .with_sample_rate(sample_rate)
             .with_num_frames(1024),
@@ -38,12 +37,11 @@ fn main() -> Result<(), Error> {
             }
             output.gain(0.5);
         },
-    )
-    .unwrap();
+    )?;
 
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    host.stop().unwrap();
+    host.stop()?;
 
     Ok(())
 }

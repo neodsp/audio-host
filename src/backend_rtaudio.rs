@@ -37,7 +37,7 @@ impl Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioHost")
             .field("backend", &"RtAudio")
-            .field("is_running", &self.stream_handle.is_some())
+            .field("is_running", &self.status.is_running())
             // only the current selection: listing every device is slow and opens them
             .field("api", &self.api())
             .field("input", &self.input())
@@ -175,8 +175,9 @@ impl AudioBackend for AudioHost {
         mut process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), Error> {
         let _api_call = ApiCall::enter();
-        self.stop()?;
+        // before stopping, so an invalid config leaves a running stream alone
         config.validate()?;
+        self.stop()?;
         self.status.reset();
 
         // check the request up front, so a running stream always matches the config

@@ -121,8 +121,10 @@ the process callback can receive blocks of a different size. It can be at most
 
 Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
 is still running, why it stopped on its own (e.g. the device was unplugged) and how many
-dropouts (xruns) happened. Streams aren't restarted automatically: call `start` again or
-pick another device.
+dropouts (xruns) happened. This library doesn't restart streams, but some backends resume
+one when its device recovers (cpal when a stalled stream calls back again, JUCE when it
+restarts the device itself). `running` is then `true` again and the error is cleared.
+Otherwise call `start` again or pick another device.
 
 ```rust
 use audio_host::{AudioBackend, AudioHost, Config, Error};

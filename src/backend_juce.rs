@@ -53,7 +53,7 @@ impl Debug for AudioHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AudioHost")
             .field("backend", &"JUCE")
-            .field("is_running", &self.handle.is_some())
+            .field("is_running", &self.status.is_running())
             // only the current selection: listing every device is slow and opens them
             .field("api", &self.api())
             .field("input", &self.input())
@@ -197,8 +197,9 @@ impl AudioBackend for AudioHost {
         config: Config,
         process_fn: impl FnMut(Block, BlockMut) + Send + 'static,
     ) -> Result<(), Error> {
-        self.stop()?;
+        // before stopping, so an invalid config leaves a running stream alone
         config.validate()?;
+        self.stop()?;
         self.status.reset();
 
         // let JUCE pick its default devices, only for the directions that are used

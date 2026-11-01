@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - juce: `set_api` returns `Error::NotFound` for unknown APIs and APIs without devices (it
   used to return `Ok`).
 - cpal, rtaudio: `set_api` now stops a running stream, like the juce backend.
+- `Error::Backend` no longer returns the backend's error from `source()`. It is still part of
+  the message, which error reporters printed twice before. Match on the variant to inspect it.
+- `set_api`, `set_input` and `set_output` return `Error::NotFound` for an empty name, instead
+  of selecting the first one.
 
 ### Added
 
@@ -41,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `status()` reports whether the stream is still running, why it stopped on its own
   (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened.
 - The cpal backend now supports input-only streams.
+- With the `serde` feature, a `Config` with missing fields deserializes with their default
+  values, so configs saved now still load after fields are added.
 
 ### Fixed
 
@@ -90,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   devices whose minimum buffer size is above `num_frames` no longer overrun it.
 - `Debug` for `AudioHost` no longer lists every device (slow, and it touched the devices); it
   shows the current API, input and output.
+- `start()` with an invalid config no longer stops the running stream.
+- cpal: the duplex input buffer returns to its 100 ms target after an xrun or clock drift.
+  Before, one underrun left it empty, so every bit of jitter caused another dropout, and
+  input that ran ahead kept a larger latency for good.
+- cpal: when a stall stopped a duplex stream and the other direction died in the meantime, the
+  stream was reported as running again once the stall cleared.
+- `Debug` for `AudioHost` showed `is_running: true` after a stream had stopped on its own.
 
 ### Documentation
 
@@ -102,6 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented that `AudioHost` is only `Send` on the cpal backend. A compile-time check keeps
   it that way.
 - rtaudio: documented that `status()` relies on rtaudio's process-wide error callback.
+- Documented that some backends resume a stream when its device recovers.
+- cpal: documented that devices without 32-bit float support can't be used.
+- The `sine` example uses `?` instead of `unwrap()`.
 
 ### Internal
 
