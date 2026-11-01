@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Config::with_input_channels`, `with_output_channels`, `with_sample_rate` and
   `with_num_frames` builder methods.
+- `Config::duplex_latency_ms` (and `with_duplex_latency_ms`) sets the input latency the cpal
+  backend adds to duplex streams. It was fixed at 100 ms, which is still the default, and can
+  be at most the new `MAX_DUPLEX_LATENCY_MS` (1000).
 - `status()` reports whether the stream is still running, why it stopped on its own
   (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened.
 - The cpal backend now supports input-only streams.
@@ -97,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Debug` for `AudioHost` no longer lists every device (slow, and it touched the devices); it
   shows the current API, input and output.
 - `start()` with an invalid config no longer stops the running stream.
-- cpal: the duplex input buffer returns to its 100 ms target after an xrun or clock drift.
+- cpal: the duplex input buffer returns to its latency target after an xrun or clock drift.
   Before, one underrun left it empty, so every bit of jitter caused another dropout, and
   input that ran ahead kept a larger latency for good.
 - cpal: when a stall stopped a duplex stream and the other direction died in the meantime, the

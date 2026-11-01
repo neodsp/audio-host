@@ -149,6 +149,33 @@ fn duplex_stream_runs() {
 
 #[test]
 #[ignore = "needs audio hardware"]
+fn duplex_stream_runs_with_low_latency() {
+    let _lock = lock_devices();
+    let mut host = AudioHost::new().unwrap();
+    if !has_input(&host) {
+        return;
+    }
+
+    // xruns are allowed here, the stream only has to keep running in step
+    for latency in [0, 10] {
+        let config = Config::default()
+            .with_input_channels(1)
+            .with_output_channels(2)
+            .with_duplex_latency_ms(latency);
+        let run = run(&mut host, config).unwrap();
+        assert!(
+            run.callbacks > 0,
+            "{latency} ms: process callback was never called"
+        );
+        assert_eq!(
+            run.mismatched_blocks, 0,
+            "{latency} ms: blocks differ in length"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs audio hardware"]
 fn too_many_output_channels_reports_a_working_count() {
     let _lock = lock_devices();
     let mut host = AudioHost::new().unwrap();

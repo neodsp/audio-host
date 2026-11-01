@@ -21,10 +21,6 @@ use crate::{
     StreamStatus, find_by_name,
 };
 
-/// Input latency added to duplex streams. cpal runs input and output as two streams, so the
-/// input goes through a ring buffer that absorbs timing differences between them.
-const DUPLEX_LATENCY_MS: u32 = 100;
-
 // cpal makes its hosts, devices and streams `Send` on every platform, and the docs promise
 // that this `AudioHost` is `Send`. Checked on every OS in CI.
 const _: () = {
@@ -41,7 +37,9 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Audio host using cpal.
 ///
-/// Duplex streams (input and output) add 100 ms (`DUPLEX_LATENCY_MS`) of input latency.
+/// Duplex streams (input and output) add [`Config::duplex_latency_ms`] of input latency
+/// (100 ms by default). cpal runs input and output as two streams, so the input goes through a
+/// ring buffer that absorbs timing differences between them.
 ///
 /// For some errors cpal doesn't say whether the stream stopped (it depends on the host), so
 /// [`status`](AudioBackend::status) only reports them once the stream stops calling back for
@@ -330,8 +328,13 @@ impl AudioHost {
         let output_stream_config = stream_config(&output_ranges, num_output_channels, &config);
 
         let (mut producer, mut input_fifo) = if has_input {
-            let latency_samples = (DUPLEX_LATENCY_MS as usize * config.sample_rate as usize / 1000)
-                * num_input_channels as usize;
+            // in u64, so it can't overflow on 32-bit targets
+            let latency_frames =
+                u64::from(config.duplex_latency_ms) * u64::from(config.sample_rate) / 1000;
+            let latency_samples = usize::try_from(latency_frames)
+                .ok()
+                .and_then(|frames| frames.checked_mul(num_input_channels as usize))
+                .ok_or(Error::InvalidConfig("duplex_latency_ms is too large"))?;
             // the buffer sizes can be clamped above `num_frames`, so size the headroom from the
             // largest block either stream moves at once
             let block_frames = config

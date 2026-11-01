@@ -115,6 +115,11 @@
 //! the process callback can receive blocks of a different size. It can be at most
 //! `MAX_NUM_FRAMES` (32768).
 //!
+//! The cpal backend runs duplex streams as two streams and buffers the input between them,
+//! which adds `duplex_latency_ms` of input latency (100 ms by default). Lower it with
+//! `Config::with_duplex_latency_ms` if you need less latency and can accept more dropouts.
+//! The other backends open real duplex streams and ignore it.
+//!
 //! ### Monitoring the stream
 //!
 //! Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
@@ -249,6 +254,9 @@ pub struct DeviceInfo {
 /// support far smaller buffers, and `num_frames` is only a request anyway.
 pub const MAX_NUM_FRAMES: usize = 32768;
 
+/// The largest `duplex_latency_ms` [`Config::validate`] accepts.
+pub const MAX_DUPLEX_LATENCY_MS: u32 = 1000;
+
 /// The stream configuration passed to [`AudioBackend::start`].
 ///
 /// Build it from [`Config::default`] with the `with_*` methods, so fields can be added later
@@ -277,6 +285,12 @@ pub struct Config {
     /// The requested block size, at most [`MAX_NUM_FRAMES`]. Only a request: the process
     /// callback can receive blocks of a different size.
     pub num_frames: usize,
+    /// Input latency in milliseconds that the cpal backend adds to duplex streams, at most
+    /// [`MAX_DUPLEX_LATENCY_MS`]. cpal runs input and output as two streams, so the input goes
+    /// through a buffer that absorbs timing differences between them. Lower values reduce the
+    /// latency but can cause dropouts (counted as xruns), especially when input and output are
+    /// different devices. Ignored by the other backends, which open real duplex streams.
+    pub duplex_latency_ms: u32,
 }
 
 impl Default for Config {
@@ -286,6 +300,7 @@ impl Default for Config {
             num_output_channels: 2,
             sample_rate: 48000,
             num_frames: 512,
+            duplex_latency_ms: 100,
         }
     }
 }
@@ -315,6 +330,12 @@ impl Config {
         self
     }
 
+    #[must_use]
+    pub const fn with_duplex_latency_ms(mut self, duplex_latency_ms: u32) -> Self {
+        self.duplex_latency_ms = duplex_latency_ms;
+        self
+    }
+
     /// Checks the config without opening a device. [`AudioBackend::start`] calls this first.
     pub fn validate(&self) -> Result<(), Error> {
         if self.num_input_channels == 0 && self.num_output_channels == 0 {
@@ -331,6 +352,10 @@ impl Config {
         if self.num_frames > MAX_NUM_FRAMES {
             // keep in sync with MAX_NUM_FRAMES (checked by a test)
             return Err(Error::InvalidConfig("num_frames must be <= 32768"));
+        }
+        if self.duplex_latency_ms > MAX_DUPLEX_LATENCY_MS {
+            // keep in sync with MAX_DUPLEX_LATENCY_MS (checked by a test)
+            return Err(Error::InvalidConfig("duplex_latency_ms must be <= 1000"));
         }
         Ok(())
     }
@@ -533,6 +558,8 @@ mod tests {
             Config::default().with_num_frames(0),
             Config::default().with_num_frames(MAX_NUM_FRAMES + 1),
             Config::default().with_num_frames(usize::MAX),
+            Config::default().with_duplex_latency_ms(MAX_DUPLEX_LATENCY_MS + 1),
+            Config::default().with_duplex_latency_ms(u32::MAX),
         ];
         for config in invalid {
             assert!(
@@ -560,16 +587,40 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_the_duplex_latency_limits() {
+        for latency in [0, MAX_DUPLEX_LATENCY_MS] {
+            let config = Config::default().with_duplex_latency_ms(latency);
+            assert!(config.validate().is_ok(), "{latency}");
+        }
+    }
+
+    #[test]
+    fn duplex_latency_error_names_the_limit() {
+        let Err(Error::InvalidConfig(message)) = Config::default()
+            .with_duplex_latency_ms(MAX_DUPLEX_LATENCY_MS + 1)
+            .validate()
+        else {
+            panic!("expected InvalidConfig");
+        };
+        assert!(
+            message.contains(&MAX_DUPLEX_LATENCY_MS.to_string()),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn builder_sets_every_field() {
         let config = Config::default()
             .with_input_channels(3)
             .with_output_channels(4)
             .with_sample_rate(44100)
-            .with_num_frames(256);
+            .with_num_frames(256)
+            .with_duplex_latency_ms(10);
         assert_eq!(config.num_input_channels, 3);
         assert_eq!(config.num_output_channels, 4);
         assert_eq!(config.sample_rate, 44100);
         assert_eq!(config.num_frames, 256);
+        assert_eq!(config.duplex_latency_ms, 10);
     }
 
     #[test]

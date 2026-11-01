@@ -117,6 +117,11 @@ device supports, so you can retry with a supported config. `num_frames` is only 
 the process callback can receive blocks of a different size. It can be at most
 `MAX_NUM_FRAMES` (32768).
 
+The cpal backend runs duplex streams as two streams and buffers the input between them,
+which adds `duplex_latency_ms` of input latency (100 ms by default). Lower it with
+`Config::with_duplex_latency_ms` if you need less latency and can accept more dropouts.
+The other backends open real duplex streams and ignore it.
+
 ### Monitoring the stream
 
 Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
