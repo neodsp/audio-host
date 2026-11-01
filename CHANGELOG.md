@@ -29,17 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Config::validate()` (and so `start()`) rejects `num_frames` above the new `MAX_NUM_FRAMES`
   (32768) with `Error::InvalidConfig`.
 - `AudioBackend` has a new required method, `status()`.
-- `set_api`, `set_input` and `set_output` now prefer an exact name match over the first name
-  containing the text.
+- `set_input` and `set_output`, and `set_api` on cpal and rtaudio, now prefer an exact name
+  match over the first name containing the text.
 - juce: `input()` and `output()` are empty until `start()` if no device was selected, because
   JUCE only knows its default devices after opening them.
 - juce: `set_api` returns `Error::NotFound` for unknown APIs and APIs without devices (it
-  used to return `Ok`).
+  used to return `Ok`). Like on the other backends, it now also accepts part of the name.
 - cpal, rtaudio: `set_api` now stops a running stream, like the juce backend.
 - `Error::Backend` no longer returns the backend's error from `source()`. It is still part of
   the message, which error reporters printed twice before. Match on the variant to inspect it.
-- `set_api`, `set_input` and `set_output` return `Error::NotFound` for an empty name, instead
-  of selecting the first one.
+- `set_input` and `set_output`, and `set_api` on cpal and rtaudio, return `Error::NotFound`
+  for an empty name, instead of selecting the first one.
 
 ### Added
 
