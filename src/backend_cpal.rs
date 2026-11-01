@@ -523,7 +523,8 @@ impl InputFifo {
         // only grows while the producer runs
         let available = self.consumer.slots();
         if self.refilling {
-            if available < self.target {
+            // at least one full read, so a target below one chunk doesn't underrun right away
+            if available < self.target.max(out.len()) {
                 out.fill(0.0);
                 // counted once, when the underrun happened
                 return true;
@@ -945,6 +946,23 @@ mod tests {
         assert!(fifo.read(&mut out));
         assert_eq!(out, [1.0, -1.0, 2.0, -2.0]);
         assert_eq!(fifo.consumer.slots(), 4);
+    }
+
+    #[test]
+    fn fifo_refills_a_full_read_when_the_target_is_smaller() {
+        // a target of 1 frame, reads of 2 frames
+        let (mut producer, mut fifo) = stereo_fifo(2, 16, 32);
+        let mut out = [9.0; 4];
+        assert!(!fifo.read(&mut out), "underrun");
+
+        // the target is reached, but not a full read: still refilling, no new xrun
+        push_frames(&mut producer, &[1.0, -1.0], 2);
+        assert!(fifo.read(&mut out));
+        assert_eq!(out, [0.0; 4]);
+
+        push_frames(&mut producer, &[2.0, -2.0], 2);
+        assert!(fifo.read(&mut out));
+        assert_eq!(out, [1.0, -1.0, 2.0, -2.0]);
     }
 
     #[test]
