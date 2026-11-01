@@ -1,0 +1,50 @@
+name: Publish
+
+# Publishes to crates.io when a version tag (e.g. `0.2.0`) is pushed for a commit on main.
+# Uses crates.io trusted publishing, so no API token is stored in the repository.
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      # requests the OIDC token that crates.io exchanges for a short-lived publish token
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # full history, so the check below can see main
+          fetch-depth: 0
+
+      - name: Check that the tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to a commit that isn't on main"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check that the tag matches the version in Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the Cargo.toml version $version"
+            exit 1
+          fi
+
+      # `cargo publish` builds the package with the default (rtaudio) backend
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libpulse-dev libjack-jackd2-dev
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
