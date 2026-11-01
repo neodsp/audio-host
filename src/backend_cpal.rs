@@ -296,11 +296,18 @@ impl AudioHost {
             };
             let watchdog = Arc::new(Watchdog::new());
             let callback_watchdog = watchdog.clone();
+            let callback_status = self.status.clone();
             let input_stream = input_device
                 .build_input_stream(
                     input_stream_config,
                     move |data: &[f32], _info: &cpal::InputCallbackInfo| {
+                        // counted even while stopped, so the watchdog sees a stall recover
                         callback_watchdog.callback();
+                        // the stream stopped (e.g. after an error): don't call `process_fn`,
+                        // like duplex streams
+                        if !callback_status.is_running() {
+                            return;
+                        }
                         let input_block = Block::from_slice(data, num_input_channels);
                         // empty output block (0 channels, 0 frames), like the other backends
                         let output_block = BlockMut::from_slice_limited(&mut [], 0, 0, 0, 0);

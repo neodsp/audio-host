@@ -103,6 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - cpal: when a stall stopped a duplex stream and the other direction died in the meantime, the
   stream was reported as running again once the stall cleared.
 - `Debug` for `AudioHost` showed `is_running: true` after a stream had stopped on its own.
+- cpal: input-only streams no longer call `process_fn` after the stream stopped on its own,
+  like duplex streams.
 
 ### Documentation
 
