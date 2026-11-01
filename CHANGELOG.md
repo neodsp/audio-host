@@ -54,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host when it is enabled and running.
 - `status()` reports whether the stream is still running, why it stopped on its own
   (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened. On cpal,
-  errors that some hosts survive are only reported if the stream then stops calling back.
+  errors that some hosts survive and others don't are ignored, so a stream that dies after one
+  goes silent without being reported.
 - The cpal backend now supports input-only streams.
 - With the `serde` feature, a `Config` with missing fields deserializes with their default
   values, so configs saved now still load after fields are added.

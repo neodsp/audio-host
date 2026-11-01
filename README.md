@@ -151,9 +151,8 @@ The other backends open real duplex streams and ignore it.
 
 Poll `status()` from your own thread, e.g. once per UI frame. It reports whether the stream
 is still running, why it stopped on its own (e.g. the device was unplugged) and how many
-dropouts (xruns) happened. This library doesn't restart streams, but some backends resume
-one when its device recovers (cpal when a stalled stream calls back again, JUCE when it
-restarts the device itself). `running` is then `true` again and the error is cleared.
+dropouts (xruns) happened. This library doesn't restart streams, but JUCE resumes one when
+it restarts the device itself. `running` is then `true` again and the error is cleared.
 Otherwise call `start` again or pick another device.
 
 ```rust
