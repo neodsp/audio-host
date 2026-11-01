@@ -7,6 +7,7 @@ include = [
   "CHANGELOG.md",
   "LICENSE.*",
   "LINUX.md",
+  "WINDOWS.md",
   "README.md",
   "examples/**",
   "src/**",
@@ -31,6 +32,12 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 cpal = ["dep:cpal"]
+# extra cpal hosts, chosen at runtime with `set_api`: asio (Windows), jack (Linux, macOS,
+# Windows), pipewire and pulseaudio (Linux). Each does nothing on other platforms.
+cpal-asio = ["cpal", "cpal/asio"]
+cpal-jack = ["cpal", "cpal/jack"]
+cpal-pipewire = ["cpal", "cpal/pipewire"]
+cpal-pulseaudio = ["cpal", "cpal/pulseaudio"]
 default = ["rtaudio"]
 juce = ["dep:cxx-juce"]
 rtaudio = ["dep:rtaudio"]

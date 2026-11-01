@@ -20,6 +20,31 @@ A backend-agnostic Rust library for managing audio input and output devices. Thi
 
 These backends are mutually exclusive. Trying to enable more than one (e.g., `cpal` and `juce` together) will result in a compile-time error.
 
+### Extra cpal hosts
+
+cpal always includes the platform's default host (WASAPI, CoreAudio, ALSA). These features
+add more hosts. Each one enables `cpal`, can be combined with the others, and does nothing on
+platforms the host doesn't exist on:
+
+| Feature           | Host       | Platforms              |
+|-------------------|------------|------------------------|
+| `cpal-asio`       | ASIO       | Windows                |
+| `cpal-jack`       | JACK       | Linux, macOS, Windows  |
+| `cpal-pipewire`   | PipeWire   | Linux                  |
+| `cpal-pulseaudio` | PulseAudio | Linux                  |
+
+`apis()` lists the hosts that were compiled in, and `set_api("JACK")` etc. switches to one.
+On Linux the default host is PipeWire, then PulseAudio, then ALSA, whichever is enabled and
+running. On Windows WASAPI stays the default, so call `set_api("ASIO")` to use ASIO.
+
+```toml
+[dependencies]
+audio-host = { version = "0.2.0", default-features = false, features = ["cpal-pipewire", "cpal-jack"] }
+```
+
+Some hosts need system libraries to build, see `LINUX.md`. ASIO needs LLVM, Visual Studio and
+Steinberg's ASIO SDK (downloaded by the build), see `WINDOWS.md` for the setup.
+
 ## Installation
 
 Add `audio-host` to your `Cargo.toml`.

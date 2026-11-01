@@ -80,6 +80,19 @@ fn run(host: &mut AudioHost, config: Config) -> Result<Run, Error> {
     })
 }
 
+/// Like [`run`], but if the input device can't open `config`'s input channels, retries with the
+/// count it reports. Some devices only open a fixed count, e.g. 2 on cpal's PipeWire host.
+fn run_with_input(host: &mut AudioHost, config: Config) -> Result<(Run, u16), Error> {
+    match run(host, config.clone()) {
+        Err(Error::UnsupportedInputChannels { supported, .. }) if supported > 0 => {
+            eprintln!("note: retrying with {supported} input channels");
+            let run = run(host, config.with_input_channels(supported))?;
+            Ok((run, supported))
+        }
+        result => result.map(|run| (run, config.num_input_channels)),
+    }
+}
+
 fn has_input(host: &AudioHost) -> bool {
     // JUCE only names its default device after start(), so also check the device list
     if host.input().is_empty() && host.inputs().is_empty() {
@@ -116,9 +129,9 @@ fn input_only_stream_runs() {
     let config = Config::default()
         .with_input_channels(1)
         .with_output_channels(0);
-    let run = run(&mut host, config).unwrap();
+    let (run, input_channels) = run_with_input(&mut host, config).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
-    assert_eq!(run.input_channels, 1);
+    assert_eq!(run.input_channels, input_channels as usize);
     assert_eq!(
         run.nonempty_unused_blocks, 0,
         "unused output block isn't empty"
@@ -137,9 +150,9 @@ fn duplex_stream_runs() {
     let config = Config::default()
         .with_input_channels(1)
         .with_output_channels(2);
-    let run = run(&mut host, config).unwrap();
+    let (run, input_channels) = run_with_input(&mut host, config).unwrap();
     assert!(run.callbacks > 0, "process callback was never called");
-    assert_eq!(run.input_channels, 1);
+    assert_eq!(run.input_channels, input_channels as usize);
     assert_eq!(run.output_channels, 2);
     assert_eq!(
         run.mismatched_blocks, 0,
@@ -162,7 +175,7 @@ fn duplex_stream_runs_with_low_latency() {
             .with_input_channels(1)
             .with_output_channels(2)
             .with_duplex_latency_ms(latency);
-        let run = run(&mut host, config).unwrap();
+        let (run, _) = run_with_input(&mut host, config).unwrap();
         assert!(
             run.callbacks > 0,
             "{latency} ms: process callback was never called"

@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Config::duplex_latency_ms` (and `with_duplex_latency_ms`) sets the input latency the cpal
   backend adds to duplex streams. It was fixed at 100 ms, which is still the default, and can
   be at most the new `MAX_DUPLEX_LATENCY_MS` (1000).
+- `cpal-asio`, `cpal-jack`, `cpal-pipewire` and `cpal-pulseaudio` features add cpal's ASIO,
+  JACK, PipeWire and PulseAudio hosts, chosen at runtime with `set_api`. Each one enables
+  `cpal` and they can be combined. On Linux, cpal picks PipeWire or PulseAudio as the default
+  host when it is enabled and running.
 - `status()` reports whether the stream is still running, why it stopped on its own
   (`StreamError::DeviceLost` or `StreamError::Backend`) and how many xruns happened.
 - The cpal backend now supports input-only streams.
@@ -111,7 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- `LINUX.md` lists the JACK development package the juce backend needs.
+- `LINUX.md` lists the JACK development package the juce backend needs, and the packages the
+  `cpal-jack` and `cpal-pipewire` features need.
+- New `WINDOWS.md` explains how to build and use ASIO with the `cpal-asio` feature.
 - Documented strict configs, monitoring the stream with `status()` and how device names are
   matched.
 - Doc examples that open audio devices no longer run during `cargo test`.

@@ -15,6 +15,24 @@ sudo apt install pkg-config libasound2-dev
 sudo dnf install pkgconf-pkg-config alsa-lib-devel
 ```
 
+### Extra cpal hosts
+
+`cpal-pulseaudio` needs nothing extra (it is pure Rust). `cpal-jack` and `cpal-pipewire` need:
+
+#### Ubuntu/Debian
+
+```sh
+sudo apt install libjack-jackd2-dev              # cpal-jack
+sudo apt install libpipewire-0.3-dev libclang-dev # cpal-pipewire
+```
+
+#### Fedora
+
+```sh
+sudo dnf install jack-audio-connection-kit-devel # cpal-jack
+sudo dnf install pipewire-devel clang-devel      # cpal-pipewire
+```
+
 ## System dependencies for `rtaudio`
 
 ### Ubuntu/Debian
