@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-01
+
 ### Breaking changes
 
 - `start()` is now strict: if it succeeds, the stream runs with exactly the requested channel
@@ -137,5 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each backend with and without serde.
 - Added a daily compatibility job that builds against the latest dependency versions.
 
-[Unreleased]: https://github.com/neodsp/audio-host/compare/0.1.1...HEAD
+[Unreleased]: https://github.com/neodsp/audio-host/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/neodsp/audio-host/compare/0.1.1...0.2.0
 [0.1.1]: https://github.com/neodsp/audio-host/releases/tag/0.1.1
